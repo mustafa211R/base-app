@@ -37,6 +37,8 @@ const SHEET_ORDER = [
   'Announcements',
   'Audit_Log',
   'Archive_Grades',
+  'Attendance',
+  'Complaints',
 ];
 
 function triggerBlobDownload(blob: Blob, filename: string) {
