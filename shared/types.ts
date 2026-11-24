@@ -1,4 +1,4 @@
-export type Role = 'guest' | 'student' | 'teacher' | 'admin';
+export type Role = 'guest' | 'student' | 'teacher' | 'admin' | 'education';
 
 export type SchoolType = 'primary' | 'middle' | 'prep' | 'secondary' | 'vocational';
 export type ShiftType = 'morning' | 'noon' | 'evening';
@@ -8,6 +8,8 @@ export type GuestStudentListMode = 'full' | 'first_names' | 'stats_only' | 'off'
 export type EnrollStatus = 'official' | 'transferred' | 'expelled' | 'graduated';
 export type IdStatus = 'unused' | 'registered' | 'disabled';
 export type IdKind = 'student' | 'teacher';
+export type ComplaintStatus = 'open' | 'in_review' | 'resolved';
+export type AttendanceStatus = 'on_time' | 'late';
 
 export interface SchoolConfig {
   school_name: string;
@@ -26,6 +28,11 @@ export interface SchoolConfig {
   pass_mark: string;
   annual_effort_formula: 'iraqi_avg' | 'weighted_40_20_40' | 'terms_only';
   final_score_formula: 'avg_effort_final' | 'weighted_40_60';
+  education_access_code: string;
+  attendance_start_time: string;
+  attendance_end_time: string;
+  attendance_grace_minutes: string;
+  attendance_workdays: string; // comma-separated 0..6 (0=Sun)
   schema_version: string;
 }
 
@@ -178,6 +185,159 @@ export interface AuditLogRow {
   detail: string;
 }
 
+export interface AttendanceRow {
+  att_id: string;
+  teacher_id: string;
+  teacher_name: string;
+  att_date: string;
+  check_in_time: string;
+  check_out_time: string;
+  method: string;
+  status: AttendanceStatus;
+  late_minutes: number;
+  device_note: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ComplaintRow {
+  complaint_id: string;
+  student_id: string;
+  student_name: string;
+  class_label: string;
+  category: string;
+  title: string;
+  details: string;
+  status: ComplaintStatus;
+  admin_reply: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AttendanceSchedule {
+  attendance_start_time: string;
+  attendance_end_time: string;
+  attendance_grace_minutes: number;
+  attendance_workdays: string;
+}
+
+export interface TeacherAttendanceMineResponse {
+  todayDate: string;
+  todayRecord: AttendanceRow | null;
+  schedule: AttendanceSchedule;
+  summary: {
+    totalDays: number;
+    onTimeDays: number;
+    lateDays: number;
+    totalLateMinutes: number;
+  };
+  records: AttendanceRow[];
+}
+
+export interface EducationDashboardData {
+  school: {
+    school_name: string;
+    school_type: SchoolType;
+    shift_type: string;
+    founded_date: string;
+    academic_year: string;
+    admin_name: string;
+    pass_mark: number;
+    about: string;
+    schedule: AttendanceSchedule;
+  };
+  students: {
+    total: number;
+    official: number;
+    transferred: number;
+    expelled: number;
+    graduated: number;
+    byGender: { male: number; female: number };
+    byStage: Array<{ stage_id: string; stage_name: string; count: number }>;
+    byClass: Array<{ class_id: string; label: string; count: number; capacity: number }>;
+    directory: Array<{
+      student_id: string;
+      full_name: string;
+      gender: string;
+      class_label: string;
+      stage_name: string;
+      enroll_status: string;
+    }>;
+  };
+  teachers: {
+    total: number;
+    directory: Array<{
+      teacher_id: string;
+      full_name: string;
+      job_title: string;
+      degree: string;
+      specialty: string;
+      subjects: string;
+      status: string;
+    }>;
+  };
+  academics: {
+    gradesEvaluated: number;
+    gradesPassed: number;
+    gradesFailed: number;
+    evaluatedStudents: number;
+    passedStudents: number;
+    failedStudents: number;
+    overallAverage: number | null;
+    byStage: Array<{
+      stage_id: string;
+      stage_name: string;
+      evaluated: number;
+      passed: number;
+      failed: number;
+      avgScore: number | null;
+    }>;
+    bySubject: Array<{
+      subject_id: string;
+      subject_name: string;
+      stage_name: string;
+      evaluated: number;
+      passed: number;
+      failed: number;
+      avgScore: number | null;
+    }>;
+  };
+  attendance: {
+    todayDate: string;
+    totalTeachers: number;
+    todayPresent: number;
+    todayOnTime: number;
+    todayLate: number;
+    todayAbsent: number;
+    totalRecords: number;
+    onTimeRecords: number;
+    lateRecords: number;
+    totalLateMinutes: number;
+    dailyTrend: Array<{ date: string; on_time: number; late: number; total: number }>;
+    byTeacher: Array<{
+      teacher_id: string;
+      teacher_name: string;
+      specialty: string;
+      total_days: number;
+      on_time_days: number;
+      late_days: number;
+      total_late_minutes: number;
+      today_status: 'on_time' | 'late' | 'absent';
+      today_check_in: string;
+      today_check_out: string;
+    }>;
+    records: AttendanceRow[];
+  };
+  complaints: {
+    total: number;
+    open: number;
+    in_review: number;
+    resolved: number;
+    byCategory: Array<{ category: string; count: number }>;
+    items: ComplaintRow[];
+  };
+}
+
 export interface AuthSession {
   token: string;
   role: Role;
@@ -188,6 +348,7 @@ export interface AuthSession {
 export interface PublicSchoolData {
   initialized: boolean;
   setupKeyRequired: boolean;
+  educationEnabled: boolean;
   school_name: string;
   founded_date: string;
   school_type: SchoolType;
@@ -202,6 +363,10 @@ export interface PublicSchoolData {
   require_teacher_pin: boolean;
   allow_student_self_edit: boolean;
   pass_mark: number;
+  attendance_start_time: string;
+  attendance_end_time: string;
+  attendance_grace_minutes: number;
+  attendance_workdays: string;
   admin_name: string;
   announcements: AnnouncementRow[];
   stats: {
