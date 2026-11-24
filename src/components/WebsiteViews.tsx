@@ -15,22 +15,30 @@ import {
   CheckCircle2,
   AlertCircle,
   Lock,
+  Fingerprint,
+  MessageSquareWarning,
+  Clock,
+  Send,
 } from 'lucide-react';
 import { formatIdGrouped } from '../../shared/luhn.ts';
 import type {
   AssignmentRow,
   AuthSession,
+  ComplaintRow,
   GradeRow,
   PublicSchoolData,
   Role,
+  TeacherAttendanceMineResponse,
 } from '../../shared/types.ts';
 import {
   api,
+  COMPLAINT_STATUS_LABELS,
   ENROLL_STATUS_LABELS,
   formatErrorAr,
   formatShifts,
   SCHOOL_TYPE_LABELS,
 } from '../lib/api.ts';
+import { DeveloperCard, DeveloperFooter } from './DeveloperFooter.tsx';
 
 interface WebsiteViewsProps {
   role: Role; // 'student' | 'teacher' | 'guest'
@@ -86,12 +94,25 @@ export function WebsiteViews({ role, session, publicData, onLogout }: WebsiteVie
   const [editAddress, setEditAddress] = useState('');
   const [editPhone, setEditPhone] = useState('');
 
+  // Teacher attendance (fingerprint)
+  const [myAttendance, setMyAttendance] = useState<TeacherAttendanceMineResponse | null>(null);
+  const [punchNote, setPunchNote] = useState('');
+  const [punchBusy, setPunchBusy] = useState(false);
+
+  // Student complaints
+  const [myComplaints, setMyComplaints] = useState<ComplaintRow[]>([]);
+  const [cmpCategory, setCmpCategory] = useState('أكاديمي وتدريس');
+  const [cmpTitle, setCmpTitle] = useState('');
+  const [cmpDetails, setCmpDetails] = useState('');
+  const [cmpBusy, setCmpBusy] = useState(false);
+
   const navItems = useMemo(() => {
     if (role === 'student') {
       return [
         { id: 'home', label: 'الرئيسية', icon: Home },
         { id: 'grades', label: 'درجاتي', icon: BarChart3 },
         { id: 'profile', label: 'بروفايلي', icon: User },
+        { id: 'complaints', label: 'الشكاوى', icon: MessageSquareWarning },
         { id: 'teachers', label: 'المدرسون', icon: Users },
         { id: 'school', label: 'المدرسة', icon: School },
       ];
@@ -99,6 +120,7 @@ export function WebsiteViews({ role, session, publicData, onLogout }: WebsiteVie
     if (role === 'teacher') {
       return [
         { id: 'home', label: 'الرئيسية', icon: Home },
+        { id: 'attendance', label: 'البصمة والحضور', icon: Fingerprint },
         { id: 'gradebook', label: 'درجات صفوفي', icon: ClipboardList },
         { id: 'students', label: 'الطلاب', icon: GraduationCap },
         { id: 'profile', label: 'بروفايلي', icon: User },
@@ -121,30 +143,34 @@ export function WebsiteViews({ role, session, publicData, onLogout }: WebsiteVie
     setErrorMsg('');
     try {
       if (role === 'student' && session) {
-        const [prof, grades, tList] = await Promise.all([
+        const [prof, grades, tList, cmps] = await Promise.all([
           api<Record<string, unknown>>('student.get', { student_id: session.id }),
           api<StudentGradesResponse>('grades.mine'),
           api<Array<Record<string, unknown>>>('teacher.list'),
+          api<ComplaintRow[]>('complaints.mine'),
         ]);
         setMyProfile(prof);
         setEditAddress(String(prof.address || ''));
         setEditPhone(String(prof.guardian_phone || ''));
         setMyGrades(grades);
         setTeachersList(tList);
+        setMyComplaints(cmps || []);
         if (prof.photo_file_id) {
           api<string>('photo.get', { entity: 'student', id: session.id })
             .then(setMyPhoto)
             .catch(() => setMyPhoto(''));
         }
       } else if (role === 'teacher' && session) {
-        const [prof, asgs, sRes] = await Promise.all([
+        const [prof, asgs, sRes, attRes] = await Promise.all([
           api<Record<string, unknown>>('teacher.get', { teacher_id: session.id }),
           api<Array<AssignmentRow & { subject_name?: string; class_label?: string }>>('admin.assignmentsList'),
           api<{ mode: string; items: Array<Record<string, unknown>> }>('student.list'),
+          api<TeacherAttendanceMineResponse>('attendance.mine'),
         ]);
         setMyProfile(prof);
         setAssignments(asgs);
         setStudentsResult(sRes);
+        setMyAttendance(attRes);
         if (prof.photo_file_id) {
           api<string>('photo.get', { entity: 'teacher', id: session.id })
             .then(setMyPhoto)
@@ -250,6 +276,75 @@ export function WebsiteViews({ role, session, publicData, onLogout }: WebsiteVie
       loadInitialData();
     } catch (err) {
       setErrorMsg(formatErrorAr(err));
+    }
+  }
+
+  async function handleTeacherPunch(type: 'in' | 'out', tryBiometric = false) {
+    setPunchBusy(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+    let method: 'fingerprint_digital' | 'webauthn' = 'fingerprint_digital';
+    try {
+      if (tryBiometric && typeof window !== 'undefined' && window.PublicKeyCredential && navigator.credentials?.create) {
+        try {
+          const available = await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+          if (available) {
+            const challenge = new Uint8Array(16);
+            window.crypto.getRandomValues(challenge);
+            const userBytes = new TextEncoder().encode(session?.id || 'teacher');
+            await navigator.credentials.create({
+              publicKey: {
+                challenge,
+                rp: { name: publicData.school_name || 'base school' },
+                user: { id: userBytes, name: session?.id || 'teacher', displayName: String(myProfile?.full_name || 'مدرس') },
+                pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+                authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' },
+                timeout: 15000,
+              },
+            });
+            method = 'webauthn';
+          }
+        } catch {
+          method = 'fingerprint_digital';
+        }
+      }
+      await api('attendance.punch', {
+        type,
+        method,
+        device_note: punchNote.trim(),
+      });
+      setPunchNote('');
+      const updated = await api<TeacherAttendanceMineResponse>('attendance.mine');
+      setMyAttendance(updated);
+      setSuccessMsg(type === 'in' ? 'تم تسجيل بصمة الحضور بنجاح' : 'تم تسجيل بصمة الانصراف بنجاح');
+    } catch (err) {
+      setErrorMsg(formatErrorAr(err));
+    } finally {
+      setPunchBusy(false);
+    }
+  }
+
+  async function handleCreateComplaint(e: React.FormEvent) {
+    e.preventDefault();
+    if (!cmpTitle.trim() || !cmpDetails.trim()) return;
+    setCmpBusy(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+    try {
+      await api('complaints.create', {
+        category: cmpCategory,
+        title: cmpTitle.trim(),
+        details: cmpDetails.trim(),
+      });
+      setCmpTitle('');
+      setCmpDetails('');
+      const list = await api<ComplaintRow[]>('complaints.mine');
+      setMyComplaints(list || []);
+      setSuccessMsg('تم إرسال شكواك بنجاح، وستظهر لإدارة المدرسة وقسم الإشراف التربوي');
+    } catch (err) {
+      setErrorMsg(formatErrorAr(err));
+    } finally {
+      setCmpBusy(false);
     }
   }
 
@@ -480,14 +575,55 @@ export function WebsiteViews({ role, session, publicData, onLogout }: WebsiteVie
                   {String(myProfile.job_title || 'مدرس')} · {String(myProfile.specialty || '')} · صفوفك المسندة: {assignments.length}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setTab('gradebook')}
-                className="px-4 py-2.5 bg-[#0F294A] text-white text-sm font-medium rounded-lg hover:bg-[#163864] whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                إدخال الدرجات
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTab('attendance')}
+                  className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-emerald-700 text-white text-sm font-medium rounded-lg hover:bg-emerald-800 whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Fingerprint className="w-4 h-4" />
+                  <span>البصمة الحضورية</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTab('gradebook')}
+                  className="px-4 py-2.5 bg-[#0F294A] text-white text-sm font-medium rounded-lg hover:bg-[#163864] whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  إدخال الدرجات
+                </button>
+              </div>
             </div>
+
+            {myAttendance && (
+              <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-[#0F294A]/10 text-[#0F294A] flex items-center justify-center shrink-0">
+                    <Clock className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold text-slate-900">
+                      حالة البصمة اليوم ({myAttendance.todayDate})
+                    </div>
+                    <div className="text-xs text-slate-600 mt-0.5">
+                      {myAttendance.todayRecord
+                        ? `حضور: ${myAttendance.todayRecord.check_in_time}${
+                            myAttendance.todayRecord.check_out_time
+                              ? ` · انصراف: ${myAttendance.todayRecord.check_out_time}`
+                              : ' · بانتظار الانصراف'
+                          }`
+                        : `لم تُسجل بصمة الحضور بعد · وقت الدوام ${myAttendance.schedule.attendance_start_time} – ${myAttendance.schedule.attendance_end_time}`}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTab('attendance')}
+                  className="text-xs px-3.5 py-2 border border-slate-300 rounded-lg text-slate-800 hover:bg-slate-50 cursor-pointer"
+                >
+                  فتح سجل الحضور والبصمة
+                </button>
+              </div>
+            )}
 
             {assignments.length > 0 && (
               <div className="bg-white border border-slate-200 rounded-xl p-5">
@@ -513,6 +649,204 @@ export function WebsiteViews({ role, session, publicData, onLogout }: WebsiteVie
             )}
 
             <AnnouncementsSection items={relevantAnnouncements} />
+          </div>
+        )}
+
+        {/* TEACHER FINGERPRINT ATTENDANCE & PERSONAL LOG */}
+        {role === 'teacher' && tab === 'attendance' && (
+          <div className="space-y-6">
+            <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-5">
+              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 pb-4">
+                <div>
+                  <h2 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center gap-2">
+                    <Fingerprint className="w-5 h-5 text-[#B8860B]" />
+                    <span>البصمة الحضورية وسجل الحضور الشخصي</span>
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    توقيت الدوام المحدد من الإدارة: من{' '}
+                    <span className="font-mono font-semibold text-slate-800" dir="ltr">
+                      {myAttendance?.schedule.attendance_start_time || publicData.attendance_start_time}
+                    </span>{' '}
+                    إلى{' '}
+                    <span className="font-mono font-semibold text-slate-800" dir="ltr">
+                      {myAttendance?.schedule.attendance_end_time || publicData.attendance_end_time}
+                    </span>{' '}
+                    · فترة سماح{' '}
+                    <span className="font-mono tabular-nums font-semibold">
+                      {myAttendance?.schedule.attendance_grace_minutes ?? publicData.attendance_grace_minutes}
+                    </span>{' '}
+                    دقيقة (بتوقيت بغداد)
+                  </p>
+                </div>
+                {myAttendance && (
+                  <div className="text-xs text-slate-500 font-mono tabular-nums" dir="ltr">
+                    {myAttendance.todayDate}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5 items-center">
+                <div className="p-5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                  <div className="text-xs font-medium text-slate-500">حالة بصمة اليوم</div>
+                  {myAttendance?.todayRecord ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-600">وقت الحضور:</span>
+                        <span className="font-mono font-bold text-slate-900" dir="ltr">
+                          {myAttendance.todayRecord.check_in_time}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-600">وقت الانصراف:</span>
+                        <span className="font-mono font-bold text-slate-900" dir="ltr">
+                          {myAttendance.todayRecord.check_out_time || 'لم يسجل بعد'}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-600">التقييم:</span>
+                        <span
+                          className={`font-semibold ${
+                            myAttendance.todayRecord.status === 'on_time' ? 'text-emerald-700' : 'text-amber-700'
+                          }`}
+                        >
+                          {myAttendance.todayRecord.status === 'on_time'
+                            ? 'حضور بالوقت المحدد'
+                            : `متأخر (${myAttendance.todayRecord.late_minutes} دقيقة)`}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-600">
+                      لم تقم بتسجيل بصمة الحضور لهذا اليوم بعد. اضغط على زر البصمة لتثبيت حضورك الآن.
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  <input
+                    type="text"
+                    value={punchNote}
+                    onChange={(e) => setPunchNote(e.target.value)}
+                    placeholder="ملاحظة اختيارية (مثلاً: حصة أولى / عذر تأخير)..."
+                    className="w-full px-3.5 py-2 border border-slate-300 rounded-lg text-sm"
+                  />
+                  <div className="flex flex-wrap gap-2.5">
+                    {!myAttendance?.todayRecord ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled={punchBusy}
+                          onClick={() => handleTeacherPunch('in', false)}
+                          className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 bg-[#0F294A] hover:bg-[#163864] disabled:opacity-50 text-white text-sm font-semibold rounded-xl cursor-pointer"
+                        >
+                          <Fingerprint className="w-5 h-5 text-[#C59B27]" />
+                          <span>{punchBusy ? 'جارٍ تسجيل البصمة...' : 'تسجيل بصمة الحضور'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={punchBusy}
+                          onClick={() => handleTeacherPunch('in', true)}
+                          className="inline-flex items-center justify-center gap-1.5 px-3.5 py-3 border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-xl cursor-pointer"
+                          title="استخدام مستشعر بصمة الجهاز إن توفر"
+                        >
+                          <span>بصمة الجهاز</span>
+                        </button>
+                      </>
+                    ) : !myAttendance.todayRecord.check_out_time ? (
+                      <button
+                        type="button"
+                        disabled={punchBusy}
+                        onClick={() => handleTeacherPunch('out', false)}
+                        className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 bg-[#B8860B] hover:bg-[#9E7208] disabled:opacity-50 text-white text-sm font-semibold rounded-xl cursor-pointer"
+                      >
+                        <Fingerprint className="w-5 h-5" />
+                        <span>{punchBusy ? 'جارٍ تسجيل الانصراف...' : 'تسجيل بصمة الانصراف'}</span>
+                      </button>
+                    ) : (
+                      <div className="w-full p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm text-center font-medium">
+                        تم إكمال بصمة الحضور والانصراف لهذا اليوم
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {myAttendance && (
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-white border border-slate-200 rounded-xl p-4">
+                    <div className="text-xs text-slate-500">إجمالي أيام الحضور</div>
+                    <div className="text-2xl font-bold font-mono tabular-nums text-slate-900 mt-1">
+                      {myAttendance.summary.totalDays}
+                    </div>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4">
+                    <div className="text-xs text-slate-500">حضور بالوقت</div>
+                    <div className="text-2xl font-bold font-mono tabular-nums text-emerald-700 mt-1">
+                      {myAttendance.summary.onTimeDays}
+                    </div>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4">
+                    <div className="text-xs text-slate-500">أيام التأخير</div>
+                    <div className="text-2xl font-bold font-mono tabular-nums text-amber-700 mt-1">
+                      {myAttendance.summary.lateDays}
+                    </div>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4">
+                    <div className="text-xs text-slate-500">مجموع دقائق التأخير</div>
+                    <div className="text-2xl font-bold font-mono tabular-nums text-slate-900 mt-1">
+                      {myAttendance.summary.totalLateMinutes} د
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white border border-slate-200 rounded-xl overflow-x-auto">
+                  <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
+                    <h3 className="font-bold text-slate-900 text-sm">سجل حضوري الشخصي (للقراءة فقط)</h3>
+                    <span className="text-xs text-slate-500">{myAttendance.records.length} سجل</span>
+                  </div>
+                  <table className="w-full text-xs text-right">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-700 border-b border-slate-200">
+                        <th className="py-2.5 px-4">التاريخ</th>
+                        <th className="py-2.5 px-4 text-center">وقت الحضور</th>
+                        <th className="py-2.5 px-4 text-center">وقت الانصراف</th>
+                        <th className="py-2.5 px-4 text-center">الحالة</th>
+                        <th className="py-2.5 px-4 text-center">دقائق التأخير</th>
+                        <th className="py-2.5 px-4">الملاحظة</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {myAttendance.records.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="py-8 text-center text-slate-400">
+                            لا توجد بصمات مسجلة في حسابك بعد
+                          </td>
+                        </tr>
+                      ) : (
+                        myAttendance.records.map((r) => (
+                          <tr key={r.att_id} className="hover:bg-slate-50">
+                            <td className="py-2.5 px-4 font-mono tabular-nums" dir="ltr">{r.att_date}</td>
+                            <td className="py-2.5 px-4 text-center font-mono tabular-nums" dir="ltr">{r.check_in_time || '—'}</td>
+                            <td className="py-2.5 px-4 text-center font-mono tabular-nums" dir="ltr">{r.check_out_time || '—'}</td>
+                            <td className="py-2.5 px-4 text-center font-medium">
+                              <span className={r.status === 'on_time' ? 'text-emerald-700' : 'text-amber-700'}>
+                                {r.status === 'on_time' ? 'بالوقت' : 'متأخر'}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-4 text-center font-mono tabular-nums">
+                              {r.late_minutes > 0 ? `${r.late_minutes} د` : '0'}
+                            </td>
+                            <td className="py-2.5 px-4 text-slate-600">{r.device_note || '—'}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -719,6 +1053,133 @@ export function WebsiteViews({ role, session, publicData, onLogout }: WebsiteVie
                 </button>
               </form>
             )}
+
+            {role === 'student' && (
+              <div className="pt-4 border-t border-slate-200 flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                    <MessageSquareWarning className="w-4 h-4 text-[#B8860B]" />
+                    <span>قسم الشكاوى والمقترحات</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    يمكنك تقديم شكوى أو مقترح ليصل مباشرةً إلى مدير المدرسة وقسم الإشراف التربوي ({myComplaints.length} شكوى مسجلة)
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTab('complaints')}
+                  className="px-4 py-2 bg-[#B8860B] hover:bg-[#9E7208] text-white text-xs sm:text-sm font-medium rounded-lg cursor-pointer"
+                >
+                  فتح قسم الشكاوى
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* STUDENT COMPLAINTS SECTION */}
+        {role === 'student' && tab === 'complaints' && (
+          <div className="space-y-6">
+            <form onSubmit={handleCreateComplaint} className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                  <MessageSquareWarning className="w-5 h-5 text-[#B8860B]" />
+                  <span>تقديم شكوى جديدة</span>
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  تُعرض الشكاوى لمدير المدرسة ومديرية التربية والإشراف التربوي لمتابعتها ومعالجتها
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">تصنيف الشكوى</label>
+                  <select
+                    value={cmpCategory}
+                    onChange={(e) => setCmpCategory(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
+                  >
+                    <option value="أكاديمي وتدريس">أكاديمي وتدريس</option>
+                    <option value="درجات وامتحانات">درجات وامتحانات</option>
+                    <option value="بنية تحتية وخدمات">بنية تحتية وخدمات</option>
+                    <option value="سلوك وانضباط">سلوك وانضباط</option>
+                    <option value="أخرى">أخرى</option>
+                  </select>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-medium text-slate-700 mb-1">عنوان الشكوى *</label>
+                  <input
+                    type="text"
+                    required
+                    value={cmpTitle}
+                    onChange={(e) => setCmpTitle(e.target.value)}
+                    placeholder="ملخص قصير للموضوع..."
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">تفاصيل الشكوى *</label>
+                <textarea
+                  rows={3}
+                  required
+                  value={cmpDetails}
+                  onChange={(e) => setCmpDetails(e.target.value)}
+                  placeholder="اشرح التفاصيل بوضوح..."
+                  className="w-full px-3.5 py-2 border border-slate-300 rounded-lg text-sm"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={cmpBusy}
+                className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#0F294A] hover:bg-[#163864] disabled:opacity-50 text-white text-sm font-medium rounded-lg cursor-pointer"
+              >
+                <Send className="w-4 h-4" />
+                <span>{cmpBusy ? 'جارٍ الإرسال...' : 'إرسال الشكوى'}</span>
+              </button>
+            </form>
+
+            <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+              <h3 className="font-bold text-slate-900 text-base">شكاواي المسجلة ({myComplaints.length})</h3>
+              {myComplaints.length === 0 ? (
+                <p className="text-sm text-slate-500">لم تقم بتقديم أي شكوى حتى الآن</p>
+              ) : (
+                <div className="space-y-3">
+                  {myComplaints.map((c) => (
+                    <div key={c.complaint_id} className="p-4 rounded-xl border border-slate-200 space-y-2">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <div className="font-bold text-slate-900 text-sm">{c.title}</div>
+                          <div className="text-xs text-slate-500 mt-0.5">
+                            {c.category} · <span className="font-mono" dir="ltr">{c.created_at.slice(0, 10)}</span>
+                          </div>
+                        </div>
+                        <span
+                          className={`text-xs font-semibold ${
+                            c.status === 'resolved'
+                              ? 'text-emerald-700'
+                              : c.status === 'in_review'
+                                ? 'text-amber-700'
+                                : 'text-red-700'
+                          }`}
+                        >
+                          {COMPLAINT_STATUS_LABELS[c.status] || c.status}
+                        </span>
+                      </div>
+                      <p className="text-sm text-slate-700">{c.details}</p>
+                      {c.admin_reply && (
+                        <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-700">
+                          <span className="font-semibold text-[#0F294A]">رد الإدارة: </span>
+                          <span>{c.admin_reply}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -931,9 +1392,12 @@ export function WebsiteViews({ role, session, publicData, onLogout }: WebsiteVie
             </div>
 
             <AnnouncementsSection items={relevantAnnouncements} />
+            <DeveloperCard />
           </div>
         )}
       </main>
+
+      <DeveloperFooter />
 
       {/* Mobile Bottom Navigation Bar (<= 15% sticky height, h-14) */}
       <nav className="no-print md:hidden fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 h-14 z-30 flex items-center justify-around px-1">
