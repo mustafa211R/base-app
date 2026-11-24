@@ -3,7 +3,7 @@ function dailyBackup() {
   const folderId = PropertiesService.getScriptProperties().getProperty('BACKUP_FOLDER_ID');
   const folder = DriveApp.getFolderById(folderId);
   const stamp = Utilities.formatDate(new Date(), 'Asia/Baghdad', 'yyyy-MM-dd_HH-mm');
-  DriveApp.getFileById(SS.getId()).makeCopy('base_backup_' + stamp, folder);
+  DriveApp.getFileById(ss_().getId()).makeCopy('base_backup_' + stamp, folder);
 
   const files = [];
   const it = folder.getFiles();
@@ -18,7 +18,8 @@ function installTriggers() {
 
 function backupExportJson_() {
   const out = {};
-  Object.keys(SCHEMA_HEADERS).forEach(name => {
+  const headers = schemaHeaders_();
+  Object.keys(headers).forEach(name => {
     let rows = readAll_(name);
     if (name === 'Admin') {
       rows = rows.map(r => { const c = Object.assign({}, r); delete c.salt; delete c.pass_hash; delete c.sec_answer_hash; return c; });
@@ -33,18 +34,19 @@ function backupRestore_(req, ctx) {
   if (!adm || sha256_(String(adm.salt) + String(req.password || '')) !== String(adm.pass_hash)) {
     throw new Error('INVALID_CREDENTIALS');
   }
+  const headers = schemaHeaders_();
   const sheetsData = req.sheets_data || {};
   let total = 0;
   Object.keys(sheetsData).forEach(name => {
-    if (!SCHEMA_HEADERS[name] || name === 'Admin') return;
+    if (!headers[name] || name === 'Admin') return;
     const rows = sheetsData[name] || [];
     if (!rows.length) return;
-    const head = SCHEMA_HEADERS[name];
+    const head = headers[name];
     const sh = sheet_(name);
     if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, head.length).clearContent();
     const values = rows.map(r => head.map(h => r[h] === undefined ? '' : r[h]));
     const range = sh.getRange(2, 1, values.length, head.length);
-    if (['IDs', 'Students', 'Teachers'].indexOf(name) >= 0) range.setNumberFormat('@');
+    if (['IDs', 'Students', 'Teachers', 'Attendance', 'Complaints'].indexOf(name) >= 0) range.setNumberFormat('@');
     range.setValues(values);
     total += values.length;
   });
@@ -109,8 +111,9 @@ function demoPopulate_(req, ctx) {
   const stages = stageApplyDefaults_({ school_type: cfg.school_type }, ctx);
   const first = stages[0];
   const clsId = 'Cls-' + first.stage_id.replace('Stg-', '') + '-A';
+  const clsLabel = first.name_ar + ' / شعبة أ';
   if (!findRow_('Classes', 'class_id', clsId)) {
-    appendObj_('Classes', { class_id: clsId, stage_id: first.stage_id, section: 'أ', label: first.name_ar + ' / شعبة أ', capacity: 35, status: 'active' }, false);
+    appendObj_('Classes', { class_id: clsId, stage_id: first.stage_id, section: 'أ', label: clsLabel, capacity: 35, status: 'active' }, false);
   }
   const subId = 'Sub-' + first.stage_id.replace('Stg-', '') + '-1';
   if (!findRow_('Subjects', 'subject_id', subId)) {
@@ -123,11 +126,43 @@ function demoPopulate_(req, ctx) {
   appendObj_('Teachers', { teacher_id: tIds[0], full_name: 'أ. علي حسين الجبوري', mother_name: '', gender: 'ذكر', birth_date: '1988-04-12', degree: 'بكالوريوس', specialty: 'الرياضيات', university: 'جامعة بغداد', college: 'التربية', grad_year: '2011', job_title: 'مدرس', hire_date: '2013-10-01', start_date: '2018-09-01', bio_cv: 'خبرة في تدريس الرياضيات.', subjects: 'الرياضيات', phone: '07700001122', whatsapp: '07700001122', email: '', address: 'بغداد', photo_file_id: '', status: 'active', updated_at: now }, true);
   appendObj_('Assignments', { assign_id: 'Asg-' + Utilities.getUuid().slice(0, 6), teacher_id: tIds[0], subject_id: subId, class_id: clsId, year: cfg.academic_year }, true);
 
-  ['أحمد محمد الكاظمي', 'فاطمة الزهراء علي', 'يوسف مصطفى الربيعي'].forEach((name, idx) => {
+  const stNames = ['أحمد محمد الكاظمي', 'فاطمة الزهراء علي', 'يوسف مصطفى الربيعي'];
+  stNames.forEach((name, idx) => {
     appendObj_('IDs', { id: sIds[idx], kind: 'student', class_id: clsId, status: 'registered', pin_hash: '', generated_at: now, registered_at: now, last_login: '', card_printed: 'TRUE' }, true);
     appendObj_('Students', { student_id: sIds[idx], full_name: name, mother_name: '', gender: idx === 1 ? 'أنثى' : 'ذكر', birth_date: '2012-05-14', address: 'بغداد', guardian_name: 'ولي الأمر', guardian_phone: '07711223344', photo_file_id: '', prev_school: '', prev_stage: '', prev_average: '', reg_reason: 'جديد', failed_years: 0, dropout_years: 0, enroll_date: todayDate_(), health_note: '', class_id: clsId, enroll_status: 'official', status_note: '', notes: '', updated_at: now }, true);
     saveSingleGrade_({ student_id: sIds[idx], subject_id: subId, year: cfg.academic_year, m1: 85, m2: 88, mid_year: 86, m3: 90, m4: 92, final_exam: 90, round: 1 }, ctx, cfg);
   });
+
+  const baghdadToday = baghdadNow_().date;
+  appendObj_('Attendance', {
+    att_id: 'Att-DEMO-' + Utilities.getUuid().slice(0, 4).toUpperCase(),
+    teacher_id: tIds[0],
+    teacher_name: 'أ. علي حسين الجبوري',
+    att_date: baghdadToday,
+    check_in_time: '07:55:00',
+    check_out_time: '',
+    method: 'fingerprint_digital',
+    status: 'on_time',
+    late_minutes: 0,
+    device_note: 'بصمة حضور صباحية',
+    created_at: now,
+    updated_at: now
+  }, true);
+
+  appendObj_('Complaints', {
+    complaint_id: 'Cmp-DEMO-' + Utilities.getUuid().slice(0, 4).toUpperCase(),
+    student_id: sIds[0],
+    student_name: stNames[0],
+    class_label: clsLabel,
+    category: 'بنية تحتية وخدمات',
+    title: 'صيانة جهاز التبريد في القاعة',
+    details: 'نرجو فحص جهاز التبريد في الشعبة قبل بدء الامتحانات الشهرية.',
+    status: 'in_review',
+    admin_reply: 'تم تحويل الطلب إلى لجنة الصيانة للمتابعة هذا الأسبوع.',
+    created_at: now,
+    updated_at: now
+  }, true);
+
   audit_('admin', ctx.id, 'demo.populate', '3 students, 1 teacher', 'ok');
   return { studentIds: sIds, teacherIds: tIds };
 }
