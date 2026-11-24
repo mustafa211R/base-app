@@ -34,17 +34,22 @@ function getContext_(token) {
 
 function authLogin_(req) {
   const role = String(req.role || '');
-  if (['admin', 'student', 'teacher'].indexOf(role) < 0) {
+  if (['admin', 'student', 'teacher', 'education'].indexOf(role) < 0) {
     throw new Error('INVALID_CREDENTIALS');
   }
   const cache = CacheService.getScriptCache();
-  const ident = role === 'admin' ? String(req.username || '').trim() : String(req.id || '').replace(/\D/g, '');
+  const ident = role === 'admin'
+    ? String(req.username || '').trim()
+    : role === 'education'
+      ? 'education'
+      : String(req.id || '').replace(/\D/g, '');
   const key = 'try:' + role + ':' + ident;
   const tries = Number(cache.get(key) || 0);
   if (tries >= 5) throw new Error('TOO_MANY_ATTEMPTS');
 
   let ctx = null;
   if (role === 'admin') ctx = checkAdmin_(ident, req.password);
+  else if (role === 'education') ctx = checkEducation_(req.access_code);
   else ctx = checkId_(role, ident, req.pin);
 
   if (!ctx) {
@@ -54,7 +59,7 @@ function authLogin_(req) {
   }
   cache.remove(key);
   const token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
-  cache.put('sess:' + token, JSON.stringify(ctx), SESSION_TTL);
+  cache.put('sess:' + token, JSON.stringify(ctx), 21600);
   audit_(ctx.role, ctx.id, 'auth.login', '-', 'ok');
   return { token: token, role: ctx.role, id: ctx.id, registered: ctx.registered };
 }
@@ -85,11 +90,19 @@ function checkAdmin_(username, password) {
   return { role: 'admin', id: 'admin', registered: true };
 }
 
+function checkEducation_(accessCode) {
+  const stored = String(config_().education_access_code || '').trim();
+  if (!stored) throw new Error('EDUCATION_DISABLED');
+  const input = String(accessCode || '').trim();
+  if (!input || sha256_(input) !== sha256_(stored)) return null;
+  return { role: 'education', id: 'education', registered: true };
+}
+
 function adminSetup_(req) {
   const props = PropertiesService.getScriptProperties();
   const key = props.getProperty('SETUP_KEY');
   if (key && req.setup_key !== key) throw new Error('FORBIDDEN');
-  const sh = SS.getSheetByName('Admin');
+  const sh = ss_().getSheetByName('Admin');
   if (sh && sh.getLastRow() > 1) throw new Error('ALREADY_SETUP');
 
   const username = String(req.username || '').trim();
@@ -123,7 +136,7 @@ function adminSetup_(req) {
 
   const token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
   const ctx = { role: 'admin', id: 'admin', registered: true };
-  CacheService.getScriptCache().put('sess:' + token, JSON.stringify(ctx), SESSION_TTL);
+  CacheService.getScriptCache().put('sess:' + token, JSON.stringify(ctx), 21600);
   audit_('admin', 'admin', 'admin.setup', username, 'ok');
   return { token: token, role: 'admin', id: 'admin', registered: true };
 }
