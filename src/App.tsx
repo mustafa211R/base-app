@@ -4,6 +4,7 @@ import { api, setAuthToken, setOnSessionExpired } from './lib/api.ts';
 import { FirstTimeRegister, RolePortal } from './components/RolePortal.tsx';
 import { WebsiteViews } from './components/WebsiteViews.tsx';
 import { AdminConsole } from './components/AdminConsole.tsx';
+import { EducationPortal } from './components/EducationPortal.tsx';
 import { ConnectionScreen } from './components/ConnectionScreen.tsx';
 
 export default function App() {
@@ -17,6 +18,12 @@ export default function App() {
       const data = await api<PublicSchoolData>('school.public');
       setLoadError(null);
       setPublicData(data);
+      if (data.initialized && typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('role') === 'guest') {
+          setGuestMode(true);
+        }
+      }
     } catch (err) {
       setLoadError(err);
     }
@@ -106,6 +113,15 @@ export default function App() {
       <AdminConsole
         publicData={publicData}
         onRefreshPublic={refreshPublic}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
+  if (session.role === 'education') {
+    return (
+      <EducationPortal
+        publicData={publicData}
         onLogout={handleLogout}
       />
     );
