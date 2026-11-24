@@ -114,12 +114,47 @@ export function AdminScreensPart1({
 
   useEffect(() => {
     if (!config) return;
+    setSchoolName(config.school_name || '');
+    setFoundedDate(String(config.founded_date || '').slice(0, 10));
+    setSchoolType(config.school_type || 'middle');
+    setShifts((config.shift_type || 'morning').split(',').filter(Boolean));
+    setMapUrl(config.map_url || '');
+    setAbout(config.about || '');
+    setAcademicYear(config.academic_year || '2026-2027');
+    setPassMark(String(config.pass_mark || '50'));
+    setEffortFormula(config.annual_effort_formula || 'iraqi_avg');
+    setFinalFormula(config.final_score_formula || 'avg_effort_final');
     setEducationCode(config.education_access_code || '');
     setAttStart(config.attendance_start_time || '08:00');
     setAttEnd(config.attendance_end_time || '13:30');
-    setAttGrace(config.attendance_grace_minutes || '15');
+    setAttGrace(String(config.attendance_grace_minutes || '15'));
     setAttWorkdays((config.attendance_workdays || '0,1,2,3,4').split(',').filter(Boolean));
   }, [config]);
+
+  useEffect(() => {
+    if (!adminProfile) return;
+    setAdmFullName(String(adminProfile.full_name || ''));
+    setAdmCert(String(adminProfile.certificate || 'بكالوريوس'));
+    setAdmSpec(String(adminProfile.specialty || ''));
+    const rawDate = String(adminProfile.start_date || '');
+    setAdmStart(/^\d{4}-\d{2}-\d{2}/.test(rawDate) ? rawDate.slice(0, 10) : rawDate);
+    setAdmPhone(String(adminProfile.phone || ''));
+    setAdmWa(String(adminProfile.whatsapp || ''));
+    setAdmUser(String(adminProfile.username || ''));
+    setAdmSecQ(String(adminProfile.sec_question || ''));
+  }, [adminProfile]);
+
+  useEffect(() => {
+    if (!selectedStageId && stages.length > 0) {
+      setSelectedStageId(stages[0].stage_id);
+    }
+  }, [stages, selectedStageId]);
+
+  useEffect(() => {
+    if (!genClassId && classes.length > 0) {
+      setGenClassId(classes[0].class_id);
+    }
+  }, [classes, genClassId]);
 
   function toggleShift(s: string) {
     setShifts((prev) => (prev.includes(s) ? (prev.length > 1 ? prev.filter((x) => x !== s) : prev) : [...prev, s]));
