@@ -20,24 +20,55 @@ function baghdadNow_() {
   return { date: date, time: time, minutes: hh * 60 + mm };
 }
 
+function sheetTz_() {
+  try {
+    const s = ss_();
+    if (s && s.getSpreadsheetTimeZone) return s.getSpreadsheetTimeZone() || 'Asia/Baghdad';
+  } catch (_) {}
+  return 'Asia/Baghdad';
+}
+
 function asDateStr_(v) {
   if (!v) return '';
   if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
-    return Utilities.formatDate(v, 'Asia/Baghdad', 'yyyy-MM-dd');
+    return Utilities.formatDate(v, sheetTz_(), 'yyyy-MM-dd');
   }
-  return String(v);
+  return String(v).trim();
 }
 
 function asTimeStr_(v) {
   if (!v) return '';
   if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
-    return Utilities.formatDate(v, 'Asia/Baghdad', 'HH:mm:ss');
+    return Utilities.formatDate(v, sheetTz_(), 'HH:mm:ss');
   }
-  return String(v);
+  return String(v).trim();
+}
+
+function asHHMMStr_(v) {
+  if (v === undefined || v === null || v === '') return '';
+  if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
+    return Utilities.formatDate(v, sheetTz_(), 'HH:mm');
+  }
+  const s = String(v).trim();
+  const ampm = /^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM|ص|م)$/i.exec(s);
+  if (ampm) {
+    let h = Number(ampm[1]);
+    const m = ampm[2];
+    const suf = ampm[3].toUpperCase();
+    if ((suf === 'PM' || suf === 'م') && h < 12) h += 12;
+    if ((suf === 'AM' || suf === 'ص') && h === 12) h = 0;
+    return ('0' + h).slice(-2) + ':' + m;
+  }
+  const hm = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(s);
+  if (hm) return ('0' + Number(hm[1])).slice(-2) + ':' + hm[2];
+  const jsDate = /\b(\d{2}):(\d{2}):\d{2}\s+GMT/.exec(s);
+  if (jsDate) return jsDate[1] + ':' + jsDate[2];
+  return s;
 }
 
 function parseTimeMinutes_(hhmm) {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim());
+  const norm = asHHMMStr_(hhmm);
+  const m = /^(\d{1,2}):(\d{2})$/.exec(norm);
   if (!m) throw new Error('INVALID_TIME_FORMAT');
   const h = Number(m[1]);
   const min = Number(m[2]);
@@ -46,9 +77,11 @@ function parseTimeMinutes_(hhmm) {
 }
 
 function getScheduleFromConfig_(cfg) {
+  const startRaw = asHHMMStr_(cfg.attendance_start_time);
+  const endRaw = asHHMMStr_(cfg.attendance_end_time);
   return {
-    attendance_start_time: cfg.attendance_start_time || '08:00',
-    attendance_end_time: cfg.attendance_end_time || '13:30',
+    attendance_start_time: /^\d{2}:\d{2}$/.test(startRaw) ? startRaw : '08:00',
+    attendance_end_time: /^\d{2}:\d{2}$/.test(endRaw) ? endRaw : '13:30',
     attendance_grace_minutes: Math.max(0, Math.min(180, Number(cfg.attendance_grace_minutes || 15))),
     attendance_workdays: cfg.attendance_workdays || '0,1,2,3,4'
   };
@@ -106,13 +139,48 @@ function cached_(key, ttl, loader) {
 }
 
 function clearCache_(keys) {
-  CacheService.getScriptCache().removeAll(keys);
+  const expanded = [];
+  keys.forEach(k => {
+    expanded.push(k);
+    if (k === 'cfg') {
+      expanded.push('cfg_v2');
+      expanded.push('cfg_v3');
+    }
+  });
+  CacheService.getScriptCache().removeAll(expanded);
 }
 
 function config_() {
-  return cached_('cfg', 120, () => {
+  return cached_('cfg_v3', 120, () => {
     const o = {};
-    readAll_('Config').forEach(r => o[r.key] = String(r.value));
+    const sh = sheet_('Config');
+    if (!sh || sh.getLastRow() < 2) return o;
+    const rng = sh.getDataRange();
+    const vals = rng.getValues();
+    const disp = rng.getDisplayValues();
+    const head = vals[0];
+    const kIdx = head.indexOf('key');
+    const vIdx = head.indexOf('value');
+    if (kIdx < 0 || vIdx < 0) return o;
+    for (let i = 1; i < vals.length; i++) {
+      const k = String(vals[i][kIdx] || '').trim();
+      if (!k) continue;
+      const raw = vals[i][vIdx];
+      const shown = String(disp[i][vIdx] || '').trim();
+      if (k === 'attendance_start_time' || k === 'attendance_end_time') {
+        const dTime = asHHMMStr_(shown);
+        const rTime = asHHMMStr_(raw);
+        o[k] = /^\d{2}:\d{2}$/.test(dTime)
+          ? dTime
+          : (/^\d{2}:\d{2}$/.test(rTime) ? rTime : (k === 'attendance_start_time' ? '08:00' : '13:30'));
+      } else if (Object.prototype.toString.call(raw) === '[object Date]' && !isNaN(raw.getTime())) {
+        o[k] = asDateStr_(raw);
+      } else if (k === 'education_access_code' || k === 'attendance_workdays' || k === 'attendance_grace_minutes' || k === 'pass_mark') {
+        o[k] = shown !== '' ? shown : String(raw === undefined || raw === null ? '' : raw);
+      } else {
+        o[k] = String(raw === undefined || raw === null ? '' : raw);
+      }
+    }
     return o;
   });
 }
