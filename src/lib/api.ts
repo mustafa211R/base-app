@@ -4,11 +4,30 @@ import { downloadClientBundleZip, exportSheetsDataToXlsx } from './clientExports
 
 export type BackendMode = 'local' | 'apps_script';
 
-// Keep auth token & backend runtime state strictly in JS memory (never localStorage/sessionStorage)
+const SCRIPT_URL_STORAGE_KEY = 'base_apps_script_url';
+
+function loadSavedScriptUrl(): string {
+  try {
+    if (typeof window !== 'undefined') {
+      const paramUrl = new URLSearchParams(window.location.search).get('api')?.trim();
+      if (paramUrl && paramUrl.startsWith('https://script.google.com/macros/s/')) {
+        window.localStorage.setItem(SCRIPT_URL_STORAGE_KEY, paramUrl);
+        return paramUrl;
+      }
+      const saved = window.localStorage.getItem(SCRIPT_URL_STORAGE_KEY);
+      if (saved && saved.startsWith('https://script.google.com/macros/s/')) return saved;
+    }
+  } catch {
+    // ignore storage access issues
+  }
+  return DEFAULT_APPS_SCRIPT_URL;
+}
+
+// Keep auth token strictly in JS memory (never localStorage/sessionStorage)
 let memoryToken: string | null = null;
 let onSessionExpiredCallback: (() => void) | null = null;
 let activeMode: BackendMode | null = null;
-let activeAppsScriptUrl: string = DEFAULT_APPS_SCRIPT_URL;
+let activeAppsScriptUrl: string = loadSavedScriptUrl();
 
 export function setAuthToken(token: string | null) {
   memoryToken = token;
@@ -30,6 +49,13 @@ export function configureBackend(mode: BackendMode, appsScriptUrl?: string) {
   activeMode = mode;
   if (appsScriptUrl && appsScriptUrl.trim()) {
     activeAppsScriptUrl = appsScriptUrl.trim();
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(SCRIPT_URL_STORAGE_KEY, activeAppsScriptUrl);
+      }
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -69,6 +95,12 @@ export const ERROR_MESSAGES_AR: Record<string, string> = {
   HAS_GRADES_ARCHIVE_FIRST: 'لا يمكن نقل الطالب لمرحلة أخرى ولديه درجات؛ يجب إنهاء السنة والأرشفة أولاً',
   INVALID_PHOTO_FORMAT: 'صيغة الصورة غير مدعومة (PNG / JPG / WEBP فقط)',
   PHOTO_TOO_LARGE: 'حجم الصورة يتجاوز الحد المسموح (2 ميجابايت)',
+  ALREADY_CHECKED_IN: 'تم تسجيل بصمة الحضور لهذا اليوم مسبقاً',
+  NOT_CHECKED_IN: 'يرجى تسجيل بصمة الحضور أولاً قبل تسجيل الانصراف',
+  ALREADY_CHECKED_OUT: 'تم تسجيل بصمة الانصراف لهذا اليوم مسبقاً',
+  EDUCATION_DISABLED: 'لم يتم تفعيل كود قسم التربية من قبل مدير المدرسة بعد',
+  INVALID_TIME_FORMAT: 'صيغة الوقت غير صالحة (المطلوب HH:MM)',
+  INVALID_STATUS: 'الحالة المختارة غير صالحة',
   BAD_JSON: 'صيغة الطلب المرسل غير صالحة',
   UNKNOWN_ACTION: 'الإجراء المطلوب غير مدعوم في خادم Apps Script — تأكد من نشر أحدث إصدار من الشيفرات الـ 6',
   APPS_SCRIPT_HTML_AUTH:
@@ -77,6 +109,12 @@ export const ERROR_MESSAGES_AR: Record<string, string> = {
     'تعذر الوصول إلى خادم Google Apps Script — تحقق من صحة الرابط أو صلاحية النشر (Anyone)',
   APPS_SCRIPT_URL_MISSING: 'لم يتم تحديد رابط Google Apps Script Web App',
   SERVER_ERROR: 'حدث خطأ غير متوقع في الخادم',
+};
+
+export const COMPLAINT_STATUS_LABELS: Record<string, string> = {
+  open: 'مفتوحة',
+  in_review: 'قيد المتابعة',
+  resolved: 'تمت المعالجة',
 };
 
 export function formatErrorAr(err: unknown): string {
