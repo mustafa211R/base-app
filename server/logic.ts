@@ -13,6 +13,12 @@ import type {
   StudentRow,
   TeacherRow,
   PermissionRow,
+  AttendanceRow,
+  AttendanceSchedule,
+  ComplaintRow,
+  ComplaintStatus,
+  EducationDashboardData,
+  TeacherAttendanceMineResponse,
 } from '../shared/types.ts';
 
 const SESSION_TTL_MS = 6 * 3600 * 1000; // 6 hours matching CacheService 21600s
@@ -50,6 +56,55 @@ function nowIso(): string {
 
 function todayDate(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function baghdadNow(): { date: string; time: string; minutes: number } {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Baghdad',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(now).map((p) => [p.type, p.value]));
+  const hourNum = Number(parts.hour === '24' ? '00' : parts.hour);
+  const minNum = Number(parts.minute);
+  const hh = String(hourNum).padStart(2, '0');
+  const mm = String(minNum).padStart(2, '0');
+  const ss = String(parts.second || '00').padStart(2, '0');
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${hh}:${mm}:${ss}`,
+    minutes: hourNum * 60 + minNum,
+  };
+}
+
+function parseTimeMinutes(hhmm: string): number {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+  if (!m) throw new ApiError('INVALID_TIME_FORMAT');
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h < 0 || h > 23 || min < 0 || min > 59) throw new ApiError('INVALID_TIME_FORMAT');
+  return h * 60 + min;
+}
+
+function safeEqualText(a: string, b: string): boolean {
+  const ha = crypto.createHash('sha256').update(a).digest();
+  const hb = crypto.createHash('sha256').update(b).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
+function getScheduleFromConfig(cfg: SchoolConfig): AttendanceSchedule {
+  return {
+    attendance_start_time: cfg.attendance_start_time || '08:00',
+    attendance_end_time: cfg.attendance_end_time || '13:30',
+    attendance_grace_minutes: Math.max(0, Math.min(180, Number(cfg.attendance_grace_minutes || 15))),
+    attendance_workdays: cfg.attendance_workdays || '0,1,2,3,4',
+  };
 }
 
 function hashSecret(secret: string, salt?: string): { salt: string; hash: string } {
@@ -147,7 +202,7 @@ export function getContext(token?: string | null): { role: Role; id: string | nu
 }
 
 function relation(ctx: { role: Role; id: string | null }, targetId: string): 'admin' | 'self' | 'teacher' | 'student' | 'guest' {
-  if (ctx.role === 'admin') return 'admin';
+  if (ctx.role === 'admin' || ctx.role === 'education') return 'admin';
   if (ctx.role !== 'guest' && ctx.id === targetId) return 'self';
   return ctx.role;
 }
@@ -298,18 +353,19 @@ function getAdminCount(): number {
 
 export function handleBaseAction(action: string, req: Record<string, unknown>, token?: string | null): unknown {
   const ALL: Role[] = ['guest', 'student', 'teacher', 'admin'];
+  const ALL_WITH_EDU: Role[] = ['guest', 'student', 'teacher', 'admin', 'education'];
   const routeRoles: Record<string, Role[]> = {
-    'auth.login': ALL,
-    'auth.logout': ALL,
-    'school.public': ALL,
-    'student.get': ALL,
-    'student.list': ALL,
+    'auth.login': ALL_WITH_EDU,
+    'auth.logout': ALL_WITH_EDU,
+    'school.public': ALL_WITH_EDU,
+    'student.get': ALL_WITH_EDU,
+    'student.list': ALL_WITH_EDU,
     'student.register': ['student'],
     'student.selfUpdate': ['student'],
-    'teacher.get': ALL,
-    'teacher.list': ALL,
+    'teacher.get': ALL_WITH_EDU,
+    'teacher.list': ALL_WITH_EDU,
     'teacher.register': ['teacher'],
-    'photo.get': ALL,
+    'photo.get': ALL_WITH_EDU,
     'grades.mine': ['student'],
     'grades.sheet': ['teacher', 'admin'],
     'grades.save': ['teacher', 'admin'],
@@ -319,14 +375,14 @@ export function handleBaseAction(action: string, req: Record<string, unknown>, t
     'admin.profileGet': ['admin'],
     'admin.profileSave': ['admin'],
     'admin.schoolSave': ['admin'],
-    'admin.stagesList': ALL,
+    'admin.stagesList': ALL_WITH_EDU,
     'admin.stageUpsert': ['admin'],
     'admin.stageApplyDefaults': ['admin'],
     'admin.stageDelete': ['admin'],
-    'admin.classesList': ALL,
+    'admin.classesList': ALL_WITH_EDU,
     'admin.classUpsert': ['admin'],
     'admin.classDelete': ['admin'],
-    'admin.subjectsList': ALL,
+    'admin.subjectsList': ALL_WITH_EDU,
     'admin.subjectUpsert': ['admin'],
     'admin.assignmentsList': ['admin', 'teacher'],
     'admin.assignmentUpsert': ['admin'],
@@ -352,6 +408,15 @@ export function handleBaseAction(action: string, req: Record<string, unknown>, t
     'backup.exportJson': ['admin'],
     'backup.restore': ['admin'],
     'demo.populate': ['admin'],
+    // New features: Attendance, Complaints, Education Directorate Supervision
+    'attendance.punch': ['teacher'],
+    'attendance.mine': ['teacher'],
+    'attendance.list': ['admin', 'education'],
+    'complaints.create': ['student'],
+    'complaints.mine': ['student'],
+    'complaints.list': ['admin', 'education'],
+    'complaints.updateStatus': ['admin'],
+    'education.dashboard': ['education', 'admin'],
   };
 
   const allowed = routeRoles[action];
@@ -375,7 +440,7 @@ export function handleBaseAction(action: string, req: Record<string, unknown>, t
     case 'admin.initSchema':
       initSchema();
       audit(ctx.role, ctx.id || 'admin', 'admin.initSchema', '-', 'ok');
-      return { initialized: true, sheets: 14 };
+      return { initialized: true, sheets: 16 };
     case 'admin.dashboard':
       return actionAdminDashboard();
     case 'admin.profileGet':
@@ -491,6 +556,22 @@ export function handleBaseAction(action: string, req: Record<string, unknown>, t
       return actionBackupRestore(req, ctx.id || 'admin');
     case 'demo.populate':
       return actionDemoPopulate(ctx.id || 'admin');
+    case 'attendance.punch':
+      return actionAttendancePunch(req, ctx);
+    case 'attendance.mine':
+      return actionAttendanceMine(ctx);
+    case 'attendance.list':
+      return actionAttendanceList(req);
+    case 'complaints.create':
+      return actionComplaintsCreate(req, ctx);
+    case 'complaints.mine':
+      return actionComplaintsMine(ctx);
+    case 'complaints.list':
+      return actionComplaintsList(req);
+    case 'complaints.updateStatus':
+      return actionComplaintsUpdateStatus(req, ctx.id || 'admin');
+    case 'education.dashboard':
+      return actionEducationDashboard();
     default:
       throw new ApiError('UNKNOWN_ACTION');
   }
@@ -508,10 +589,12 @@ function actionSchoolPublic(): PublicSchoolData {
   const unusedIdsCount = (db.prepare("SELECT COUNT(*) AS c FROM IDs WHERE status = 'unused'").get() as { c: number }).c;
 
   const setupKeyRequired = Boolean(process.env.SETUP_KEY && process.env.SETUP_KEY.trim() !== '');
+  const schedule = getScheduleFromConfig(cfg);
 
   return {
     initialized: Boolean(adminRow),
     setupKeyRequired,
+    educationEnabled: Boolean(cfg.education_access_code && cfg.education_access_code.trim() !== ''),
     school_name: cfg.school_name || 'نظام base المدرسي',
     founded_date: cfg.founded_date || '',
     school_type: cfg.school_type || 'middle',
@@ -526,6 +609,10 @@ function actionSchoolPublic(): PublicSchoolData {
     require_teacher_pin: cfg.require_teacher_pin === 'TRUE',
     allow_student_self_edit: cfg.allow_student_self_edit === 'TRUE',
     pass_mark: Number(cfg.pass_mark || 50),
+    attendance_start_time: schedule.attendance_start_time,
+    attendance_end_time: schedule.attendance_end_time,
+    attendance_grace_minutes: schedule.attendance_grace_minutes,
+    attendance_workdays: schedule.attendance_workdays,
     admin_name: adminRow ? adminRow.full_name : '',
     announcements,
     stats: {
@@ -539,10 +626,15 @@ function actionSchoolPublic(): PublicSchoolData {
 
 function actionAuthLogin(req: Record<string, unknown>) {
   const role = String(req.role || '');
-  if (!['admin', 'student', 'teacher'].includes(role)) {
+  if (!['admin', 'student', 'teacher', 'education'].includes(role)) {
     throw new ApiError('INVALID_CREDENTIALS');
   }
-  const identifier = role === 'admin' ? String(req.username || '').trim() : normalizeIdDigits(String(req.id || ''));
+  const identifier =
+    role === 'admin'
+      ? String(req.username || '').trim()
+      : role === 'education'
+        ? 'education'
+        : normalizeIdDigits(String(req.id || ''));
   const attemptKey = `${role}:${identifier}`;
   const attempt = loginAttempts.get(attemptKey);
   if (attempt && attempt.lockedUntil > Date.now()) {
@@ -560,6 +652,16 @@ function actionAuthLogin(req: Record<string, unknown>) {
       | undefined;
     if (adm && verifySecret(password, adm.salt, adm.pass_hash)) {
       authResult = { role: 'admin', id: 'admin', registered: true };
+    }
+  } else if (role === 'education') {
+    const cfg = getConfigMap();
+    const storedCode = String(cfg.education_access_code || '').trim();
+    if (!storedCode) {
+      throw new ApiError('EDUCATION_DISABLED');
+    }
+    const inputCode = String(req.access_code || '').trim();
+    if (inputCode && safeEqualText(inputCode, storedCode)) {
+      authResult = { role: 'education', id: 'education', registered: true };
     }
   } else {
     const expectedLen = role === 'student' ? 16 : 8;
@@ -758,6 +860,28 @@ function actionAdminSchoolSave(req: Record<string, unknown>, actorId: string) {
   const mapUrl = req.map_url !== undefined ? String(req.map_url).trim() : cfg.map_url;
   if (!validateMapUrl(mapUrl)) throw new ApiError('INVALID_MAP_URL');
 
+  const attStart = req.attendance_start_time !== undefined
+    ? String(req.attendance_start_time).trim()
+    : (cfg.attendance_start_time || '08:00');
+  const attEnd = req.attendance_end_time !== undefined
+    ? String(req.attendance_end_time).trim()
+    : (cfg.attendance_end_time || '13:30');
+  parseTimeMinutes(attStart);
+  parseTimeMinutes(attEnd);
+
+  const graceRaw = req.attendance_grace_minutes !== undefined
+    ? Number(req.attendance_grace_minutes)
+    : Number(cfg.attendance_grace_minutes || 15);
+  const graceMinutes = String(Math.max(0, Math.min(180, Number.isFinite(graceRaw) ? Math.round(graceRaw) : 15)));
+
+  const eduCode = req.education_access_code !== undefined
+    ? String(req.education_access_code).trim()
+    : (cfg.education_access_code || '');
+
+  const workdays = req.attendance_workdays !== undefined
+    ? String(req.attendance_workdays).trim()
+    : (cfg.attendance_workdays || '0,1,2,3,4');
+
   let logoFileId = cfg.logo_file_id || '';
   if (typeof req.logo_data_url === 'string' && req.logo_data_url.startsWith('data:image/')) {
     logoFileId = savePhotoFromDataUrl(req.logo_data_url);
@@ -782,6 +906,11 @@ function actionAdminSchoolSave(req: Record<string, unknown>, actorId: string) {
     ['pass_mark', String(req.pass_mark ?? cfg.pass_mark)],
     ['annual_effort_formula', String(req.annual_effort_formula ?? cfg.annual_effort_formula)],
     ['final_score_formula', String(req.final_score_formula ?? cfg.final_score_formula)],
+    ['education_access_code', eduCode],
+    ['attendance_start_time', attStart],
+    ['attendance_end_time', attEnd],
+    ['attendance_grace_minutes', graceMinutes],
+    ['attendance_workdays', workdays],
   ];
 
   const stmt = db.prepare('INSERT OR REPLACE INTO Config (key, value) VALUES (?, ?)');
@@ -1272,7 +1401,9 @@ function actionStudentList(req: Record<string, unknown>, ctx: { role: Role; id: 
     rows = rows.filter((r) => r.class_id === String(req.class_id));
   }
 
-  const fields = allowedFields('student', ctx.role);
+  const permRel: 'admin' | 'self' | 'teacher' | 'student' | 'guest' =
+    ctx.role === 'education' ? 'admin' : ctx.role;
+  const fields = allowedFields('student', permRel);
   const mapped = rows.map((rec) => {
     const out = pick(rec as unknown as Record<string, unknown>, [...fields, 'student_id', 'class_id', 'class_label', 'stage_id', 'stage_name']);
     if (!fields.includes('student_id') && ctx.role === 'guest') {
@@ -1810,6 +1941,8 @@ const VALID_SHEETS = [
   'Announcements',
   'Audit_Log',
   'Archive_Grades',
+  'Attendance',
+  'Complaints',
 ] as const;
 
 function actionSheetsInspect(sheetName: string) {
@@ -1993,7 +2126,7 @@ function actionBackupRestore(req: Record<string, unknown>, actorId: string) {
     throw new ApiError('MISSING_FIELD');
   }
 
-  const restorable = ['Config', 'Stages', 'Classes', 'Subjects', 'IDs', 'Students', 'Teachers', 'Assignments', 'Grades', 'Permissions', 'Announcements'] as const;
+  const restorable = ['Config', 'Stages', 'Classes', 'Subjects', 'IDs', 'Students', 'Teachers', 'Assignments', 'Grades', 'Permissions', 'Announcements', 'Attendance', 'Complaints'] as const;
   let totalRows = 0;
 
   for (const sheet of restorable) {
@@ -2048,6 +2181,22 @@ function actionBackupRestore(req: Record<string, unknown>, actorId: string) {
           totalRows++;
         }
       }
+    } else if (sheet === 'Attendance') {
+      const stmt = db.prepare('INSERT OR REPLACE INTO Attendance (att_id, teacher_id, teacher_name, att_date, check_in_time, check_out_time, method, status, late_minutes, device_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      for (const r of rows) {
+        if (r.att_id) {
+          stmt.run(String(r.att_id), String(r.teacher_id || ''), String(r.teacher_name || ''), String(r.att_date || ''), String(r.check_in_time || ''), String(r.check_out_time || ''), String(r.method || 'digital'), String(r.status || 'on_time'), Number(r.late_minutes || 0), String(r.device_note || ''), String(r.created_at || nowIso()), String(r.updated_at || nowIso()));
+          totalRows++;
+        }
+      }
+    } else if (sheet === 'Complaints') {
+      const stmt = db.prepare('INSERT OR REPLACE INTO Complaints (complaint_id, student_id, student_name, class_label, category, title, details, status, admin_reply, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      for (const r of rows) {
+        if (r.complaint_id) {
+          stmt.run(String(r.complaint_id), String(r.student_id || ''), String(r.student_name || ''), String(r.class_label || ''), String(r.category || 'أخرى'), String(r.title || ''), String(r.details || ''), String(r.status || 'open'), String(r.admin_reply || ''), String(r.created_at || nowIso()), String(r.updated_at || nowIso()));
+          totalRows++;
+        }
+      }
     }
   }
 
@@ -2078,7 +2227,7 @@ function actionDemoPopulate(actorId: string) {
   const insSub = db.prepare('INSERT OR IGNORE INTO Subjects (subject_id, name_ar, stage_id, weekly_periods, active) VALUES (?, ?, ?, 5, 1)');
   for (const st of stages) {
     for (let i = 0; i < subNames.length; i++) {
-      insSub.run(`Sub-${st.stage_id.replace('Stg-', '')}-${i + 1}`, subNames[i], st.stage_id, 5);
+      insSub.run(`Sub-${st.stage_id.replace('Stg-', '')}-${i + 1}`, subNames[i], st.stage_id);
     }
   }
 
@@ -2162,6 +2311,462 @@ function actionDemoPopulate(actorId: string) {
     'INSERT OR IGNORE INTO Announcements (ann_id, title, body, audience, publish_date, expire_date, active) VALUES (?, ?, ?, ?, ?, ?, 1)'
   ).run('Ann-DEMO-2', 'تحديث بيانات الهيئة التدريسية', 'يرجى من المدرسين الجدد استكمال السيرة الذاتية عند أول تسجيل دخول.', 'teachers', todayDate(), '');
 
+  // Demo Attendance & Complaints
+  const baghdadToday = baghdadNow().date;
+  db.prepare(
+    `INSERT OR IGNORE INTO Attendance (att_id, teacher_id, teacher_name, att_date, check_in_time, check_out_time, method, status, late_minutes, device_note, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run('Att-DEMO-1', teacherIds[0], tMeta[0].name, baghdadToday, '07:55:00', '', 'fingerprint_digital', 'on_time', 0, 'بصمة حضور صباحية', now, now);
+  db.prepare(
+    `INSERT OR IGNORE INTO Attendance (att_id, teacher_id, teacher_name, att_date, check_in_time, check_out_time, method, status, late_minutes, device_note, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run('Att-DEMO-2', teacherIds[1], tMeta[1].name, baghdadToday, '08:22:00', '', 'fingerprint_digital', 'late', 22, 'تأخر مروري', now, now);
+
+  db.prepare(
+    `INSERT OR IGNORE INTO Complaints (complaint_id, student_id, student_name, class_label, category, title, details, status, admin_reply, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    'Cmp-DEMO-1',
+    studentIds[0],
+    sampleStudents[0],
+    classDefs[0].label,
+    'بنية تحتية وخدمات',
+    'صيانة جهاز التبريد في القاعة',
+    'نرجو فحص جهاز التبريد في الشعبة قبل بدء الامتحانات الشهرية.',
+    'in_review',
+    'تم تحويل الطلب إلى لجنة الصيانة للمتابعة هذا الأسبوع.',
+    now,
+    now
+  );
+
   audit('admin', actorId, 'demo.populate', `${studentIds.length} students, ${teacherIds.length} teachers`, 'ok');
   return { studentIds, teacherIds, unusedStudentIds, unusedTeacherIds };
+}
+
+// =========================================================================
+// ATTENDANCE (FINGERPRINT), COMPLAINTS, & EDUCATION SUPERVISION PORTAL
+// =========================================================================
+
+function actionAttendancePunch(req: Record<string, unknown>, ctx: { role: Role; id: string | null }) {
+  if (!ctx.id) throw new ApiError('FORBIDDEN');
+  const teacher = db.prepare('SELECT teacher_id, full_name FROM Teachers WHERE teacher_id = ?').get(ctx.id) as
+    | { teacher_id: string; full_name: string }
+    | undefined;
+  if (!teacher) throw new ApiError('NOT_FOUND');
+
+  const punchType = req.type === 'out' ? 'out' : 'in';
+  const method = req.method === 'webauthn' ? 'webauthn' : 'fingerprint_digital';
+  const deviceNote = String(req.device_note || '').slice(0, 140);
+
+  const cfg = getConfigMap();
+  const schedule = getScheduleFromConfig(cfg);
+  const startMinutes = parseTimeMinutes(schedule.attendance_start_time);
+  const deadlineMinutes = startMinutes + schedule.attendance_grace_minutes;
+  const { date: today, time: nowTime, minutes: nowMinutes } = baghdadNow();
+  const now = nowIso();
+
+  const existing = db
+    .prepare('SELECT * FROM Attendance WHERE teacher_id = ? AND att_date = ?')
+    .get(ctx.id, today) as unknown as AttendanceRow | undefined;
+
+  if (punchType === 'in') {
+    if (existing) throw new ApiError('ALREADY_CHECKED_IN');
+    const isLate = nowMinutes > deadlineMinutes;
+    const status = isLate ? 'late' : 'on_time';
+    const lateMinutes = isLate ? Math.max(1, nowMinutes - startMinutes) : 0;
+    const attId = `Att-${today.replace(/-/g, '')}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+
+    db.prepare(
+      `INSERT INTO Attendance (att_id, teacher_id, teacher_name, att_date, check_in_time, check_out_time, method, status, late_minutes, device_note, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)`
+    ).run(attId, teacher.teacher_id, teacher.full_name, today, nowTime, method, status, lateMinutes, deviceNote, now, now);
+
+    audit('teacher', ctx.id, 'attendance.punch', `in:${status}:${lateMinutes}m`, 'ok');
+    return db.prepare('SELECT * FROM Attendance WHERE att_id = ?').get(attId);
+  }
+
+  if (!existing) throw new ApiError('NOT_CHECKED_IN');
+  if (existing.check_out_time) throw new ApiError('ALREADY_CHECKED_OUT');
+
+  db.prepare('UPDATE Attendance SET check_out_time = ?, updated_at = ? WHERE att_id = ?').run(nowTime, now, existing.att_id);
+  audit('teacher', ctx.id, 'attendance.punch', `out:${today}`, 'ok');
+  return db.prepare('SELECT * FROM Attendance WHERE att_id = ?').get(existing.att_id);
+}
+
+function actionAttendanceMine(ctx: { role: Role; id: string | null }): TeacherAttendanceMineResponse {
+  if (!ctx.id) throw new ApiError('FORBIDDEN');
+  const cfg = getConfigMap();
+  const schedule = getScheduleFromConfig(cfg);
+  const { date: today } = baghdadNow();
+
+  const records = db
+    .prepare('SELECT * FROM Attendance WHERE teacher_id = ? ORDER BY att_date DESC, check_in_time DESC LIMIT 120')
+    .all(ctx.id) as unknown as AttendanceRow[];
+
+  const todayRecord = records.find((r) => r.att_date === today) || null;
+  const onTimeDays = records.filter((r) => r.status === 'on_time').length;
+  const lateDays = records.filter((r) => r.status === 'late').length;
+  const totalLateMinutes = records.reduce((acc, r) => acc + Number(r.late_minutes || 0), 0);
+
+  return {
+    todayDate: today,
+    todayRecord,
+    schedule,
+    summary: {
+      totalDays: records.length,
+      onTimeDays,
+      lateDays,
+      totalLateMinutes,
+    },
+    records,
+  };
+}
+
+function actionAttendanceList(req: Record<string, unknown>) {
+  const cfg = getConfigMap();
+  const schedule = getScheduleFromConfig(cfg);
+  const { date: today } = baghdadNow();
+  let rows = db
+    .prepare('SELECT * FROM Attendance ORDER BY att_date DESC, check_in_time DESC LIMIT 500')
+    .all() as unknown as AttendanceRow[];
+
+  if (req.teacher_id) {
+    const tid = normalizeIdDigits(String(req.teacher_id));
+    rows = rows.filter((r) => r.teacher_id === tid);
+  }
+  if (req.att_date) {
+    rows = rows.filter((r) => r.att_date === String(req.att_date));
+  }
+  if (req.status) {
+    rows = rows.filter((r) => r.status === String(req.status));
+  }
+
+  return {
+    todayDate: today,
+    schedule,
+    records: rows,
+  };
+}
+
+function actionComplaintsCreate(req: Record<string, unknown>, ctx: { role: Role; id: string | null }) {
+  if (!ctx.id) throw new ApiError('FORBIDDEN');
+  requireFields(req, ['title', 'details']);
+  const student = db
+    .prepare(
+      `SELECT s.student_id, s.full_name, c.label AS class_label
+       FROM Students s LEFT JOIN Classes c ON c.class_id = s.class_id
+       WHERE s.student_id = ?`
+    )
+    .get(ctx.id) as { student_id: string; full_name: string; class_label?: string } | undefined;
+  if (!student) throw new ApiError('NOT_FOUND');
+
+  const id = `Cmp-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+  const now = nowIso();
+  const category = String(req.category || 'أخرى').trim().slice(0, 60);
+  const title = String(req.title).trim().slice(0, 140);
+  const details = String(req.details).trim().slice(0, 1500);
+
+  db.prepare(
+    `INSERT INTO Complaints (complaint_id, student_id, student_name, class_label, category, title, details, status, admin_reply, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'open', '', ?, ?)`
+  ).run(id, student.student_id, student.full_name, student.class_label || '', category, title, details, now, now);
+
+  audit('student', ctx.id, 'complaints.create', id, 'ok');
+  return db.prepare('SELECT * FROM Complaints WHERE complaint_id = ?').get(id);
+}
+
+function actionComplaintsMine(ctx: { role: Role; id: string | null }): ComplaintRow[] {
+  if (!ctx.id) throw new ApiError('FORBIDDEN');
+  return db
+    .prepare('SELECT * FROM Complaints WHERE student_id = ? ORDER BY created_at DESC')
+    .all(ctx.id) as unknown as ComplaintRow[];
+}
+
+function actionComplaintsList(req: Record<string, unknown>): ComplaintRow[] {
+  let rows = db.prepare('SELECT * FROM Complaints ORDER BY created_at DESC LIMIT 400').all() as unknown as ComplaintRow[];
+  if (req.status) {
+    rows = rows.filter((c) => c.status === String(req.status));
+  }
+  return rows;
+}
+
+function actionComplaintsUpdateStatus(req: Record<string, unknown>, actorId: string) {
+  const id = String(req.complaint_id || '');
+  if (!id) throw new ApiError('MISSING_FIELD', { field: 'complaint_id' });
+  const cur = db.prepare('SELECT * FROM Complaints WHERE complaint_id = ?').get(id) as unknown as ComplaintRow | undefined;
+  if (!cur) throw new ApiError('NOT_FOUND');
+
+  const status = String(req.status || cur.status) as ComplaintStatus;
+  if (!['open', 'in_review', 'resolved'].includes(status)) throw new ApiError('INVALID_STATUS');
+  const reply = String(req.admin_reply ?? cur.admin_reply ?? '').slice(0, 1500);
+  const now = nowIso();
+
+  db.prepare('UPDATE Complaints SET status = ?, admin_reply = ?, updated_at = ? WHERE complaint_id = ?').run(
+    status,
+    reply,
+    now,
+    id
+  );
+  audit('admin', actorId, 'complaints.updateStatus', `${id}:${status}`, 'ok');
+  return db.prepare('SELECT * FROM Complaints WHERE complaint_id = ?').get(id);
+}
+
+function actionEducationDashboard(): EducationDashboardData {
+  const cfg = getConfigMap();
+  const schedule = getScheduleFromConfig(cfg);
+  const passMark = Number(cfg.pass_mark || 50);
+  const adminRow = db.prepare('SELECT full_name FROM Admin LIMIT 1').get() as { full_name: string } | undefined;
+
+  const stages = db.prepare('SELECT * FROM Stages ORDER BY sort_order ASC').all() as Array<{
+    stage_id: string;
+    name_ar: string;
+  }>;
+  const classes = db.prepare('SELECT * FROM Classes').all() as Array<{
+    class_id: string;
+    stage_id: string;
+    label: string;
+    capacity: number;
+  }>;
+  const subjects = db.prepare('SELECT * FROM Subjects').all() as Array<{
+    subject_id: string;
+    name_ar: string;
+    stage_id: string;
+  }>;
+  const students = db.prepare('SELECT * FROM Students ORDER BY full_name ASC').all() as unknown as StudentRow[];
+  const teachers = db.prepare('SELECT * FROM Teachers ORDER BY full_name ASC').all() as unknown as TeacherRow[];
+  const grades = db
+    .prepare('SELECT * FROM Grades WHERE year = ? AND final IS NOT NULL')
+    .all(cfg.academic_year) as unknown as GradeRow[];
+  const attendanceRows = db
+    .prepare('SELECT * FROM Attendance ORDER BY att_date DESC, check_in_time DESC LIMIT 500')
+    .all() as unknown as AttendanceRow[];
+  const complaints = db
+    .prepare('SELECT * FROM Complaints ORDER BY created_at DESC LIMIT 400')
+    .all() as unknown as ComplaintRow[];
+
+  const classMap = new Map(classes.map((c) => [c.class_id, c]));
+  const stageMap = new Map(stages.map((s) => [s.stage_id, s]));
+
+  // Students breakdown
+  const male = students.filter((s) => s.gender === 'ذكر').length;
+  const female = students.filter((s) => s.gender === 'أنثى').length;
+  const official = students.filter((s) => s.enroll_status === 'official').length;
+  const transferred = students.filter((s) => s.enroll_status === 'transferred').length;
+  const expelled = students.filter((s) => s.enroll_status === 'expelled').length;
+  const graduated = students.filter((s) => s.enroll_status === 'graduated').length;
+
+  const byStageCount = stages.map((st) => {
+    const stageClassIds = new Set(classes.filter((c) => c.stage_id === st.stage_id).map((c) => c.class_id));
+    return {
+      stage_id: st.stage_id,
+      stage_name: st.name_ar,
+      count: students.filter((s) => stageClassIds.has(s.class_id)).length,
+    };
+  });
+
+  const byClassCount = classes.map((c) => ({
+    class_id: c.class_id,
+    label: c.label,
+    count: students.filter((s) => s.class_id === c.class_id).length,
+    capacity: Number(c.capacity || 35),
+  }));
+
+  const studentDirectory = students.map((s) => {
+    const cls = classMap.get(s.class_id);
+    const stg = cls ? stageMap.get(cls.stage_id) : undefined;
+    return {
+      student_id: s.student_id,
+      full_name: s.full_name,
+      gender: s.gender,
+      class_label: cls?.label || s.class_id,
+      stage_name: stg?.name_ar || '',
+      enroll_status: s.enroll_status,
+    };
+  });
+
+  // Academics pass/fail analytics
+  const evaluatedGradeNums = grades.map((g) => Number(g.final));
+  const gradesPassed = evaluatedGradeNums.filter((v) => v >= passMark).length;
+  const gradesFailed = evaluatedGradeNums.length - gradesPassed;
+  const overallAverage =
+    evaluatedGradeNums.length > 0
+      ? Math.round((evaluatedGradeNums.reduce((a, b) => a + b, 0) / evaluatedGradeNums.length) * 10) / 10
+      : null;
+
+  // Student-level pass/fail (a student passes if all evaluated subjects in current year >= passMark)
+  const gradesByStudent = new Map<string, number[]>();
+  for (const g of grades) {
+    const arr = gradesByStudent.get(g.student_id) || [];
+    arr.push(Number(g.final));
+    gradesByStudent.set(g.student_id, arr);
+  }
+  let passedStudents = 0;
+  let failedStudents = 0;
+  for (const scores of gradesByStudent.values()) {
+    if (scores.every((v) => v >= passMark)) passedStudents++;
+    else failedStudents++;
+  }
+
+  const studentMap = new Map(students.map((s) => [s.student_id, s]));
+  const academicByStage = stages.map((st) => {
+    const stageClassIds = new Set(classes.filter((c) => c.stage_id === st.stage_id).map((c) => c.class_id));
+    const stageGrades = grades.filter((g) => {
+      const stu = studentMap.get(g.student_id);
+      return stu && stageClassIds.has(stu.class_id);
+    });
+    const passed = stageGrades.filter((g) => Number(g.final) >= passMark).length;
+    const avgScore =
+      stageGrades.length > 0
+        ? Math.round((stageGrades.reduce((a, g) => a + Number(g.final), 0) / stageGrades.length) * 10) / 10
+        : null;
+    return {
+      stage_id: st.stage_id,
+      stage_name: st.name_ar,
+      evaluated: stageGrades.length,
+      passed,
+      failed: stageGrades.length - passed,
+      avgScore,
+    };
+  });
+
+  const academicBySubject = subjects.map((sub) => {
+    const subGrades = grades.filter((g) => g.subject_id === sub.subject_id);
+    const passed = subGrades.filter((g) => Number(g.final) >= passMark).length;
+    const avgScore =
+      subGrades.length > 0
+        ? Math.round((subGrades.reduce((a, g) => a + Number(g.final), 0) / subGrades.length) * 10) / 10
+        : null;
+    return {
+      subject_id: sub.subject_id,
+      subject_name: sub.name_ar,
+      stage_name: stageMap.get(sub.stage_id)?.name_ar || '',
+      evaluated: subGrades.length,
+      passed,
+      failed: subGrades.length - passed,
+      avgScore,
+    };
+  });
+
+  // Attendance analytics
+  const { date: today } = baghdadNow();
+  const todayRows = attendanceRows.filter((r) => r.att_date === today);
+  const todayOnTime = todayRows.filter((r) => r.status === 'on_time').length;
+  const todayLate = todayRows.filter((r) => r.status === 'late').length;
+  const todayPresent = todayRows.length;
+  const todayAbsent = Math.max(0, teachers.length - todayPresent);
+
+  const onTimeRecords = attendanceRows.filter((r) => r.status === 'on_time').length;
+  const lateRecords = attendanceRows.filter((r) => r.status === 'late').length;
+  const totalLateMinutes = attendanceRows.reduce((acc, r) => acc + Number(r.late_minutes || 0), 0);
+
+  const dateMap = new Map<string, { on_time: number; late: number }>();
+  for (const r of attendanceRows) {
+    const entry = dateMap.get(r.att_date) || { on_time: 0, late: 0 };
+    if (r.status === 'late') entry.late++;
+    else entry.on_time++;
+    dateMap.set(r.att_date, entry);
+  }
+  const dailyTrend = Array.from(dateMap.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-14)
+    .map(([date, c]) => ({ date, on_time: c.on_time, late: c.late, total: c.on_time + c.late }));
+
+  const byTeacher = teachers.map((t) => {
+    const recs = attendanceRows.filter((r) => r.teacher_id === t.teacher_id);
+    const todayRec = recs.find((r) => r.att_date === today);
+    return {
+      teacher_id: t.teacher_id,
+      teacher_name: t.full_name,
+      specialty: t.specialty,
+      total_days: recs.length,
+      on_time_days: recs.filter((r) => r.status === 'on_time').length,
+      late_days: recs.filter((r) => r.status === 'late').length,
+      total_late_minutes: recs.reduce((acc, r) => acc + Number(r.late_minutes || 0), 0),
+      today_status: todayRec ? todayRec.status : ('absent' as const),
+      today_check_in: todayRec?.check_in_time || '',
+      today_check_out: todayRec?.check_out_time || '',
+    };
+  });
+
+  // Complaints analytics
+  const openCount = complaints.filter((c) => c.status === 'open').length;
+  const inReviewCount = complaints.filter((c) => c.status === 'in_review').length;
+  const resolvedCount = complaints.filter((c) => c.status === 'resolved').length;
+  const catCounts = new Map<string, number>();
+  for (const c of complaints) {
+    const cat = c.category || 'أخرى';
+    catCounts.set(cat, (catCounts.get(cat) || 0) + 1);
+  }
+  const byCategory = Array.from(catCounts.entries()).map(([category, count]) => ({ category, count }));
+
+  return {
+    school: {
+      school_name: cfg.school_name || 'نظام base المدرسي',
+      school_type: cfg.school_type || 'middle',
+      shift_type: cfg.shift_type || 'morning',
+      founded_date: cfg.founded_date || '',
+      academic_year: cfg.academic_year || '2026-2027',
+      admin_name: adminRow?.full_name || '',
+      pass_mark: passMark,
+      about: cfg.about || '',
+      schedule,
+    },
+    students: {
+      total: students.length,
+      official,
+      transferred,
+      expelled,
+      graduated,
+      byGender: { male, female },
+      byStage: byStageCount,
+      byClass: byClassCount,
+      directory: studentDirectory,
+    },
+    teachers: {
+      total: teachers.length,
+      directory: teachers.map((t) => ({
+        teacher_id: t.teacher_id,
+        full_name: t.full_name,
+        job_title: t.job_title,
+        degree: t.degree,
+        specialty: t.specialty,
+        subjects: t.subjects,
+        status: t.status,
+      })),
+    },
+    academics: {
+      gradesEvaluated: evaluatedGradeNums.length,
+      gradesPassed,
+      gradesFailed,
+      evaluatedStudents: gradesByStudent.size,
+      passedStudents,
+      failedStudents,
+      overallAverage,
+      byStage: academicByStage,
+      bySubject: academicBySubject,
+    },
+    attendance: {
+      todayDate: today,
+      totalTeachers: teachers.length,
+      todayPresent,
+      todayOnTime,
+      todayLate,
+      todayAbsent,
+      totalRecords: attendanceRows.length,
+      onTimeRecords,
+      lateRecords,
+      totalLateMinutes,
+      dailyTrend,
+      byTeacher,
+      records: attendanceRows,
+    },
+    complaints: {
+      total: complaints.length,
+      open: openCount,
+      in_review: inReviewCount,
+      resolved: resolvedCount,
+      byCategory,
+      items: complaints,
+    },
+  };
 }
