@@ -1,5 +1,5 @@
 // ===== data.gs : أدوات الجداول والصلاحيات والملفات =====
-function sheet_(name) { return SS.getSheetByName(name); }
+function sheet_(name) { return ss_().getSheetByName(name); }
 
 function headers_(name) {
   const sh = sheet_(name);
@@ -10,6 +10,49 @@ function headers_(name) {
 function colIndex_(name, col) { return headers_(name).indexOf(col) + 1; }
 
 function todayDate_() { return new Date().toISOString().slice(0, 10); }
+
+function baghdadNow_() {
+  const now = new Date();
+  const date = Utilities.formatDate(now, 'Asia/Baghdad', 'yyyy-MM-dd');
+  const time = Utilities.formatDate(now, 'Asia/Baghdad', 'HH:mm:ss');
+  const hh = Number(time.slice(0, 2));
+  const mm = Number(time.slice(3, 5));
+  return { date: date, time: time, minutes: hh * 60 + mm };
+}
+
+function asDateStr_(v) {
+  if (!v) return '';
+  if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
+    return Utilities.formatDate(v, 'Asia/Baghdad', 'yyyy-MM-dd');
+  }
+  return String(v);
+}
+
+function asTimeStr_(v) {
+  if (!v) return '';
+  if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
+    return Utilities.formatDate(v, 'Asia/Baghdad', 'HH:mm:ss');
+  }
+  return String(v);
+}
+
+function parseTimeMinutes_(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim());
+  if (!m) throw new Error('INVALID_TIME_FORMAT');
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h < 0 || h > 23 || min < 0 || min > 59) throw new Error('INVALID_TIME_FORMAT');
+  return h * 60 + min;
+}
+
+function getScheduleFromConfig_(cfg) {
+  return {
+    attendance_start_time: cfg.attendance_start_time || '08:00',
+    attendance_end_time: cfg.attendance_end_time || '13:30',
+    attendance_grace_minutes: Math.max(0, Math.min(180, Number(cfg.attendance_grace_minutes || 15))),
+    attendance_workdays: cfg.attendance_workdays || '0,1,2,3,4'
+  };
+}
 
 function readAll_(name) {
   const sh = sheet_(name);
@@ -75,7 +118,7 @@ function config_() {
 }
 
 function relation_(ctx, targetId) {
-  if (ctx.role === 'admin') return 'admin';
+  if (ctx.role === 'admin' || ctx.role === 'education') return 'admin';
   if (ctx.role !== 'guest' && ctx.id === targetId) return 'self';
   return ctx.role;
 }
@@ -131,9 +174,11 @@ function schoolPublic_() {
     try { logoDataUrl = readDrivePhotoDataUrl_(cfg.logo_file_id); } catch (_) {}
   }
 
+  const schedule = getScheduleFromConfig_(cfg);
   return {
     initialized: Boolean(adm),
     setupKeyRequired: Boolean(setupKey),
+    educationEnabled: Boolean(cfg.education_access_code && String(cfg.education_access_code).trim() !== ''),
     school_name: cfg.school_name || 'نظام base المدرسي',
     founded_date: cfg.founded_date || '',
     school_type: cfg.school_type || 'middle',
@@ -148,6 +193,10 @@ function schoolPublic_() {
     require_teacher_pin: cfg.require_teacher_pin === 'TRUE',
     allow_student_self_edit: cfg.allow_student_self_edit === 'TRUE',
     pass_mark: Number(cfg.pass_mark || 50),
+    attendance_start_time: schedule.attendance_start_time,
+    attendance_end_time: schedule.attendance_end_time,
+    attendance_grace_minutes: schedule.attendance_grace_minutes,
+    attendance_workdays: schedule.attendance_workdays,
     admin_name: adm ? String(adm.full_name) : '',
     announcements: anns,
     stats: {
@@ -210,7 +259,8 @@ function listStudents_(req, ctx) {
     rows = rows.filter(r => r.class_id === String(req.class_id));
   }
 
-  const fields = allowedFields_('student', ctx.role);
+  const permRel = ctx.role === 'education' ? 'admin' : ctx.role;
+  const fields = allowedFields_('student', permRel);
   const items = rows.map(rec => {
     const cls = classes.find(c => c.class_id === rec.class_id) || {};
     const stg = stages.find(s => s.stage_id === cls.stage_id) || {};
@@ -366,4 +416,437 @@ function getPhoto_(req, ctx) {
   if (entity === 'student' && ctx.role === 'student' && ctx.id !== targetId) throw new Error('FORBIDDEN');
   if (allowedFields_(entity, relation_(ctx, targetId)).indexOf('photo_file_id') < 0) throw new Error('FORBIDDEN');
   return readDrivePhotoDataUrl_(rec.photo_file_id);
+}
+
+function normalizeAttRow_(r) {
+  return Object.assign({}, r, {
+    teacher_id: String(r.teacher_id || ''),
+    att_date: asDateStr_(r.att_date),
+    check_in_time: asTimeStr_(r.check_in_time),
+    check_out_time: asTimeStr_(r.check_out_time),
+    late_minutes: Number(r.late_minutes || 0)
+  });
+}
+
+function attendancePunch_(req, ctx) {
+  if (!ctx.id) throw new Error('FORBIDDEN');
+  const teacher = readAll_('Teachers').find(t => String(t.teacher_id) === String(ctx.id));
+  if (!teacher) throw new Error('NOT_FOUND');
+
+  const punchType = req.type === 'out' ? 'out' : 'in';
+  const method = req.method === 'webauthn' ? 'webauthn' : 'fingerprint_digital';
+  const deviceNote = String(req.device_note || '').slice(0, 140);
+
+  const cfg = config_();
+  const schedule = getScheduleFromConfig_(cfg);
+  const startMinutes = parseTimeMinutes_(schedule.attendance_start_time);
+  const deadlineMinutes = startMinutes + schedule.attendance_grace_minutes;
+  const baghdad = baghdadNow_();
+  const today = baghdad.date;
+  const nowTime = baghdad.time;
+  const nowMinutes = baghdad.minutes;
+  const now = new Date().toISOString();
+
+  const all = readAll_('Attendance');
+  const idx = all.findIndex(r => String(r.teacher_id) === String(ctx.id) && asDateStr_(r.att_date) === today);
+
+  if (punchType === 'in') {
+    if (idx >= 0) throw new Error('ALREADY_CHECKED_IN');
+    const isLate = nowMinutes > deadlineMinutes;
+    const status = isLate ? 'late' : 'on_time';
+    const lateMinutes = isLate ? Math.max(1, nowMinutes - startMinutes) : 0;
+    const attId = 'Att-' + today.replace(/-/g, '') + '-' + Utilities.getUuid().slice(0, 6).toUpperCase();
+    const obj = {
+      att_id: attId,
+      teacher_id: String(teacher.teacher_id),
+      teacher_name: teacher.full_name,
+      att_date: today,
+      check_in_time: nowTime,
+      check_out_time: '',
+      method: method,
+      status: status,
+      late_minutes: lateMinutes,
+      device_note: deviceNote,
+      created_at: now,
+      updated_at: now
+    };
+    appendObj_('Attendance', obj, true);
+    audit_('teacher', ctx.id, 'attendance.punch', 'in:' + status + ':' + lateMinutes + 'm', 'ok');
+    return obj;
+  }
+
+  if (idx < 0) throw new Error('NOT_CHECKED_IN');
+  const sheetRow = idx + 2;
+  const existing = normalizeAttRow_(all[idx]);
+  if (existing.check_out_time) throw new Error('ALREADY_CHECKED_OUT');
+
+  existing.check_out_time = nowTime;
+  existing.updated_at = now;
+  updateRowObj_('Attendance', sheetRow, existing, true);
+  audit_('teacher', ctx.id, 'attendance.punch', 'out:' + today, 'ok');
+  return existing;
+}
+
+function attendanceMine_(req, ctx) {
+  if (!ctx.id) throw new Error('FORBIDDEN');
+  const cfg = config_();
+  const schedule = getScheduleFromConfig_(cfg);
+  const today = baghdadNow_().date;
+
+  const records = readAll_('Attendance')
+    .map(normalizeAttRow_)
+    .filter(r => r.teacher_id === String(ctx.id))
+    .sort((a, b) => (b.att_date + ' ' + b.check_in_time).localeCompare(a.att_date + ' ' + a.check_in_time))
+    .slice(0, 120);
+
+  const todayRecord = records.find(r => r.att_date === today) || null;
+  const onTimeDays = records.filter(r => r.status === 'on_time').length;
+  const lateDays = records.filter(r => r.status === 'late').length;
+  const totalLateMinutes = records.reduce((acc, r) => acc + Number(r.late_minutes || 0), 0);
+
+  return {
+    todayDate: today,
+    todayRecord: todayRecord,
+    schedule: schedule,
+    summary: {
+      totalDays: records.length,
+      onTimeDays: onTimeDays,
+      lateDays: lateDays,
+      totalLateMinutes: totalLateMinutes
+    },
+    records: records
+  };
+}
+
+function attendanceList_(req) {
+  const cfg = config_();
+  const schedule = getScheduleFromConfig_(cfg);
+  const today = baghdadNow_().date;
+  let rows = readAll_('Attendance')
+    .map(normalizeAttRow_)
+    .sort((a, b) => (b.att_date + ' ' + b.check_in_time).localeCompare(a.att_date + ' ' + a.check_in_time))
+    .slice(0, 500);
+
+  if (req.teacher_id) {
+    const tid = String(req.teacher_id).replace(/\D/g, '');
+    rows = rows.filter(r => r.teacher_id === tid);
+  }
+  if (req.att_date) rows = rows.filter(r => r.att_date === String(req.att_date));
+  if (req.status) rows = rows.filter(r => r.status === String(req.status));
+
+  return { todayDate: today, schedule: schedule, records: rows };
+}
+
+function normalizeComplaintRow_(r) {
+  return Object.assign({}, r, {
+    student_id: String(r.student_id || ''),
+    created_at: String(r.created_at || ''),
+    updated_at: String(r.updated_at || '')
+  });
+}
+
+function complaintsCreate_(req, ctx) {
+  if (!ctx.id) throw new Error('FORBIDDEN');
+  if (!req.title || !req.details) throw new Error('MISSING_FIELD');
+  const student = readAll_('Students').find(s => String(s.student_id) === String(ctx.id));
+  if (!student) throw new Error('NOT_FOUND');
+  const cls = readAll_('Classes').find(c => c.class_id === student.class_id) || {};
+
+  const id = 'Cmp-' + Utilities.getUuid().slice(0, 6).toUpperCase();
+  const now = new Date().toISOString();
+  const obj = {
+    complaint_id: id,
+    student_id: String(student.student_id),
+    student_name: student.full_name,
+    class_label: cls.label || '',
+    category: String(req.category || 'أخرى').trim().slice(0, 60),
+    title: String(req.title).trim().slice(0, 140),
+    details: String(req.details).trim().slice(0, 1500),
+    status: 'open',
+    admin_reply: '',
+    created_at: now,
+    updated_at: now
+  };
+  appendObj_('Complaints', obj, true);
+  audit_('student', ctx.id, 'complaints.create', id, 'ok');
+  return obj;
+}
+
+function complaintsMine_(req, ctx) {
+  if (!ctx.id) throw new Error('FORBIDDEN');
+  return readAll_('Complaints')
+    .map(normalizeComplaintRow_)
+    .filter(c => c.student_id === String(ctx.id))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+function complaintsList_(req) {
+  let rows = readAll_('Complaints')
+    .map(normalizeComplaintRow_)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .slice(0, 400);
+  if (req.status) rows = rows.filter(c => c.status === String(req.status));
+  return rows;
+}
+
+function complaintsUpdateStatus_(req, ctx) {
+  const id = String(req.complaint_id || '');
+  if (!id) throw new Error('MISSING_FIELD');
+  const row = findRow_('Complaints', 'complaint_id', id);
+  if (!row) throw new Error('NOT_FOUND');
+  const cur = normalizeComplaintRow_(readRow_('Complaints', row));
+  const status = String(req.status || cur.status);
+  if (['open', 'in_review', 'resolved'].indexOf(status) < 0) throw new Error('INVALID_STATUS');
+  cur.status = status;
+  cur.admin_reply = String(req.admin_reply !== undefined ? req.admin_reply : (cur.admin_reply || '')).slice(0, 1500);
+  cur.updated_at = new Date().toISOString();
+  updateRowObj_('Complaints', row, cur, true);
+  audit_('admin', ctx.id, 'complaints.updateStatus', id + ':' + status, 'ok');
+  return cur;
+}
+
+function educationDashboard_() {
+  const cfg = config_();
+  const schedule = getScheduleFromConfig_(cfg);
+  const passMark = Number(cfg.pass_mark || 50);
+  const adm = readAll_('Admin')[0];
+
+  const stages = readAll_('Stages').sort((a, b) => Number(a.sort_order) - Number(b.sort_order));
+  const classes = readAll_('Classes');
+  const subjects = readAll_('Subjects');
+  const students = readAll_('Students').sort((a, b) => String(a.full_name).localeCompare(String(b.full_name)));
+  const teachers = readAll_('Teachers').sort((a, b) => String(a.full_name).localeCompare(String(b.full_name)));
+  const grades = readAll_('Grades').filter(g => String(g.year) === String(cfg.academic_year) && g.final !== '' && g.final !== null && g.final !== undefined);
+  const attendanceRows = readAll_('Attendance')
+    .map(normalizeAttRow_)
+    .sort((a, b) => (b.att_date + ' ' + b.check_in_time).localeCompare(a.att_date + ' ' + a.check_in_time))
+    .slice(0, 500);
+  const complaints = readAll_('Complaints')
+    .map(normalizeComplaintRow_)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .slice(0, 400);
+
+  const classMap = {};
+  classes.forEach(c => classMap[c.class_id] = c);
+  const stageMap = {};
+  stages.forEach(s => stageMap[s.stage_id] = s);
+
+  const male = students.filter(s => s.gender === 'ذكر').length;
+  const female = students.filter(s => s.gender === 'أنثى').length;
+  const official = students.filter(s => s.enroll_status === 'official').length;
+  const transferred = students.filter(s => s.enroll_status === 'transferred').length;
+  const expelled = students.filter(s => s.enroll_status === 'expelled').length;
+  const graduated = students.filter(s => s.enroll_status === 'graduated').length;
+
+  const byStageCount = stages.map(st => {
+    const clsIds = {};
+    classes.filter(c => c.stage_id === st.stage_id).forEach(c => clsIds[c.class_id] = true);
+    return {
+      stage_id: st.stage_id,
+      stage_name: st.name_ar,
+      count: students.filter(s => Boolean(clsIds[s.class_id])).length
+    };
+  });
+
+  const byClassCount = classes.map(c => ({
+    class_id: c.class_id,
+    label: c.label,
+    count: students.filter(s => s.class_id === c.class_id).length,
+    capacity: Number(c.capacity || 35)
+  }));
+
+  const studentDirectory = students.map(s => {
+    const cls = classMap[s.class_id] || {};
+    const stg = cls.stage_id ? (stageMap[cls.stage_id] || {}) : {};
+    return {
+      student_id: String(s.student_id),
+      full_name: s.full_name,
+      gender: s.gender,
+      class_label: cls.label || s.class_id,
+      stage_name: stg.name_ar || '',
+      enroll_status: s.enroll_status
+    };
+  });
+
+  const evalScores = grades.map(g => Number(g.final));
+  const gradesPassed = evalScores.filter(v => v >= passMark).length;
+  const gradesFailed = evalScores.length - gradesPassed;
+  const overallAverage = evalScores.length > 0
+    ? Math.round((evalScores.reduce((a, b) => a + b, 0) / evalScores.length) * 10) / 10
+    : null;
+
+  const gradesByStudent = {};
+  grades.forEach(g => {
+    const sid = String(g.student_id);
+    if (!gradesByStudent[sid]) gradesByStudent[sid] = [];
+    gradesByStudent[sid].push(Number(g.final));
+  });
+  let passedStudents = 0, failedStudents = 0, evaluatedStudents = 0;
+  Object.keys(gradesByStudent).forEach(sid => {
+    evaluatedStudents++;
+    if (gradesByStudent[sid].every(v => v >= passMark)) passedStudents++;
+    else failedStudents++;
+  });
+
+  const studentMap = {};
+  students.forEach(s => studentMap[String(s.student_id)] = s);
+
+  const academicByStage = stages.map(st => {
+    const clsIds = {};
+    classes.filter(c => c.stage_id === st.stage_id).forEach(c => clsIds[c.class_id] = true);
+    const stGrades = grades.filter(g => {
+      const stu = studentMap[String(g.student_id)];
+      return stu && Boolean(clsIds[stu.class_id]);
+    });
+    const passed = stGrades.filter(g => Number(g.final) >= passMark).length;
+    const avgScore = stGrades.length > 0
+      ? Math.round((stGrades.reduce((a, g) => a + Number(g.final), 0) / stGrades.length) * 10) / 10
+      : null;
+    return {
+      stage_id: st.stage_id,
+      stage_name: st.name_ar,
+      evaluated: stGrades.length,
+      passed: passed,
+      failed: stGrades.length - passed,
+      avgScore: avgScore
+    };
+  });
+
+  const academicBySubject = subjects.map(sub => {
+    const subGrades = grades.filter(g => g.subject_id === sub.subject_id);
+    const passed = subGrades.filter(g => Number(g.final) >= passMark).length;
+    const avgScore = subGrades.length > 0
+      ? Math.round((subGrades.reduce((a, g) => a + Number(g.final), 0) / subGrades.length) * 10) / 10
+      : null;
+    return {
+      subject_id: sub.subject_id,
+      subject_name: sub.name_ar,
+      stage_name: (stageMap[sub.stage_id] || {}).name_ar || '',
+      evaluated: subGrades.length,
+      passed: passed,
+      failed: subGrades.length - passed,
+      avgScore: avgScore
+    };
+  });
+
+  const today = baghdadNow_().date;
+  const todayRows = attendanceRows.filter(r => r.att_date === today);
+  const todayOnTime = todayRows.filter(r => r.status === 'on_time').length;
+  const todayLate = todayRows.filter(r => r.status === 'late').length;
+  const todayPresent = todayRows.length;
+  const todayAbsent = Math.max(0, teachers.length - todayPresent);
+
+  const onTimeRecords = attendanceRows.filter(r => r.status === 'on_time').length;
+  const lateRecords = attendanceRows.filter(r => r.status === 'late').length;
+  const totalLateMinutes = attendanceRows.reduce((acc, r) => acc + Number(r.late_minutes || 0), 0);
+
+  const dateMap = {};
+  attendanceRows.forEach(r => {
+    if (!dateMap[r.att_date]) dateMap[r.att_date] = { on_time: 0, late: 0 };
+    if (r.status === 'late') dateMap[r.att_date].late++;
+    else dateMap[r.att_date].on_time++;
+  });
+  const dailyTrend = Object.keys(dateMap)
+    .sort()
+    .slice(-14)
+    .map(d => ({ date: d, on_time: dateMap[d].on_time, late: dateMap[d].late, total: dateMap[d].on_time + dateMap[d].late }));
+
+  const byTeacher = teachers.map(t => {
+    const tid = String(t.teacher_id);
+    const recs = attendanceRows.filter(r => r.teacher_id === tid);
+    const todayRec = recs.find(r => r.att_date === today);
+    return {
+      teacher_id: tid,
+      teacher_name: t.full_name,
+      specialty: t.specialty,
+      total_days: recs.length,
+      on_time_days: recs.filter(r => r.status === 'on_time').length,
+      late_days: recs.filter(r => r.status === 'late').length,
+      total_late_minutes: recs.reduce((acc, r) => acc + Number(r.late_minutes || 0), 0),
+      today_status: todayRec ? todayRec.status : 'absent',
+      today_check_in: todayRec ? todayRec.check_in_time : '',
+      today_check_out: todayRec ? todayRec.check_out_time : ''
+    };
+  });
+
+  const openCount = complaints.filter(c => c.status === 'open').length;
+  const inReviewCount = complaints.filter(c => c.status === 'in_review').length;
+  const resolvedCount = complaints.filter(c => c.status === 'resolved').length;
+  const catCounts = {};
+  complaints.forEach(c => {
+    const cat = c.category || 'أخرى';
+    catCounts[cat] = (catCounts[cat] || 0) + 1;
+  });
+  const byCategory = Object.keys(catCounts).map(cat => ({ category: cat, count: catCounts[cat] }));
+
+  return {
+    school: {
+      school_name: cfg.school_name || 'نظام base المدرسي',
+      school_type: cfg.school_type || 'middle',
+      shift_type: cfg.shift_type || 'morning',
+      founded_date: cfg.founded_date || '',
+      academic_year: cfg.academic_year || '2026-2027',
+      admin_name: adm ? String(adm.full_name) : '',
+      pass_mark: passMark,
+      about: cfg.about || '',
+      schedule: schedule
+    },
+    students: {
+      total: students.length,
+      official: official,
+      transferred: transferred,
+      expelled: expelled,
+      graduated: graduated,
+      byGender: { male: male, female: female },
+      byStage: byStageCount,
+      byClass: byClassCount,
+      directory: studentDirectory
+    },
+    teachers: {
+      total: teachers.length,
+      directory: teachers.map(t => ({
+        teacher_id: String(t.teacher_id),
+        full_name: t.full_name,
+        job_title: t.job_title,
+        degree: t.degree,
+        specialty: t.specialty,
+        subjects: t.subjects,
+        status: t.status
+      }))
+    },
+    academics: {
+      gradesEvaluated: evalScores.length,
+      gradesPassed: gradesPassed,
+      gradesFailed: gradesFailed,
+      evaluatedStudents: evaluatedStudents,
+      passedStudents: passedStudents,
+      failedStudents: failedStudents,
+      overallAverage: overallAverage,
+      byStage: academicByStage,
+      bySubject: academicBySubject
+    },
+    attendance: {
+      todayDate: today,
+      totalTeachers: teachers.length,
+      todayPresent: todayPresent,
+      todayOnTime: todayOnTime,
+      todayLate: todayLate,
+      todayAbsent: todayAbsent,
+      totalRecords: attendanceRows.length,
+      onTimeRecords: onTimeRecords,
+      lateRecords: lateRecords,
+      totalLateMinutes: totalLateMinutes,
+      dailyTrend: dailyTrend,
+      byTeacher: byTeacher,
+      records: attendanceRows
+    },
+    complaints: {
+      total: complaints.length,
+      open: openCount,
+      in_review: inReviewCount,
+      resolved: resolvedCount,
+      byCategory: byCategory,
+      items: complaints
+    }
+  };
 }
