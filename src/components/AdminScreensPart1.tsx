@@ -47,6 +47,34 @@ interface Part1Props {
   onRefreshAll: () => Promise<void>;
 }
 
+function normalizeTimeInput(val: unknown, fallback: string): string {
+  const s = String(val ?? '').trim();
+  const m = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(s);
+  if (m) {
+    const h = Number(m[1]);
+    const min = Number(m[2]);
+    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) {
+      return `${String(h).padStart(2, '0')}:${m[2]}`;
+    }
+  }
+  return fallback;
+}
+
+function normalizeDateInput(val: unknown): string {
+  const s = String(val ?? '').trim();
+  if (!s) return '';
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const ts = Date.parse(s);
+  if (!Number.isNaN(ts)) {
+    const d = new Date(ts);
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const da = String(d.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${da}`;
+  }
+  return '';
+}
+
 export function AdminScreensPart1({
   screen,
   publicData,
@@ -67,7 +95,7 @@ export function AdminScreensPart1({
 
   // Screen 2: School Config
   const [schoolName, setSchoolName] = useState(config?.school_name || publicData.school_name);
-  const [foundedDate, setFoundedDate] = useState(config?.founded_date || publicData.founded_date);
+  const [foundedDate, setFoundedDate] = useState(normalizeDateInput(config?.founded_date || publicData.founded_date));
   const [schoolType, setSchoolType] = useState<SchoolType>(config?.school_type || publicData.school_type);
   const [shifts, setShifts] = useState<string[]>((config?.shift_type || publicData.shift_type || 'morning').split(',').filter(Boolean));
   const [mapUrl, setMapUrl] = useState(config?.map_url || '');
@@ -79,8 +107,8 @@ export function AdminScreensPart1({
   const [logoDataUrl, setLogoDataUrl] = useState<string | undefined>(undefined);
   const [educationCode, setEducationCode] = useState(config?.education_access_code || '');
   const [showEduCode, setShowEduCode] = useState(false);
-  const [attStart, setAttStart] = useState(config?.attendance_start_time || publicData.attendance_start_time || '08:00');
-  const [attEnd, setAttEnd] = useState(config?.attendance_end_time || publicData.attendance_end_time || '13:30');
+  const [attStart, setAttStart] = useState(normalizeTimeInput(config?.attendance_start_time ?? publicData.attendance_start_time, '08:00'));
+  const [attEnd, setAttEnd] = useState(normalizeTimeInput(config?.attendance_end_time ?? publicData.attendance_end_time, '13:30'));
   const [attGrace, setAttGrace] = useState(config?.attendance_grace_minutes || String(publicData.attendance_grace_minutes ?? 15));
   const [attWorkdays, setAttWorkdays] = useState<string[]>(
     (config?.attendance_workdays || publicData.attendance_workdays || '0,1,2,3,4').split(',').filter(Boolean)
@@ -90,7 +118,7 @@ export function AdminScreensPart1({
   const [admFullName, setAdmFullName] = useState(String(adminProfile?.full_name || ''));
   const [admCert, setAdmCert] = useState(String(adminProfile?.certificate || 'بكالوريوس'));
   const [admSpec, setAdmSpec] = useState(String(adminProfile?.specialty || ''));
-  const [admStart, setAdmStart] = useState(String(adminProfile?.start_date || ''));
+  const [admStart, setAdmStart] = useState(normalizeDateInput(adminProfile?.start_date));
   const [admPhone, setAdmPhone] = useState(String(adminProfile?.phone || ''));
   const [admWa, setAdmWa] = useState(String(adminProfile?.whatsapp || ''));
   const [admUser, setAdmUser] = useState(String(adminProfile?.username || ''));
@@ -115,7 +143,7 @@ export function AdminScreensPart1({
   useEffect(() => {
     if (!config) return;
     setSchoolName(config.school_name || '');
-    setFoundedDate(String(config.founded_date || '').slice(0, 10));
+    setFoundedDate(normalizeDateInput(config.founded_date));
     setSchoolType(config.school_type || 'middle');
     setShifts((config.shift_type || 'morning').split(',').filter(Boolean));
     setMapUrl(config.map_url || '');
@@ -125,8 +153,8 @@ export function AdminScreensPart1({
     setEffortFormula(config.annual_effort_formula || 'iraqi_avg');
     setFinalFormula(config.final_score_formula || 'avg_effort_final');
     setEducationCode(config.education_access_code || '');
-    setAttStart(config.attendance_start_time || '08:00');
-    setAttEnd(config.attendance_end_time || '13:30');
+    setAttStart(normalizeTimeInput(config.attendance_start_time, '08:00'));
+    setAttEnd(normalizeTimeInput(config.attendance_end_time, '13:30'));
     setAttGrace(String(config.attendance_grace_minutes || '15'));
     setAttWorkdays((config.attendance_workdays || '0,1,2,3,4').split(',').filter(Boolean));
   }, [config]);
@@ -136,8 +164,7 @@ export function AdminScreensPart1({
     setAdmFullName(String(adminProfile.full_name || ''));
     setAdmCert(String(adminProfile.certificate || 'بكالوريوس'));
     setAdmSpec(String(adminProfile.specialty || ''));
-    const rawDate = String(adminProfile.start_date || '');
-    setAdmStart(/^\d{4}-\d{2}-\d{2}/.test(rawDate) ? rawDate.slice(0, 10) : rawDate);
+    setAdmStart(normalizeDateInput(adminProfile.start_date));
     setAdmPhone(String(adminProfile.phone || ''));
     setAdmWa(String(adminProfile.whatsapp || ''));
     setAdmUser(String(adminProfile.username || ''));
@@ -226,8 +253,8 @@ export function AdminScreensPart1({
         final_score_formula: finalFormula,
         logo_data_url: logoDataUrl,
         education_access_code: educationCode.trim(),
-        attendance_start_time: attStart,
-        attendance_end_time: attEnd,
+        attendance_start_time: normalizeTimeInput(attStart, '08:00'),
+        attendance_end_time: normalizeTimeInput(attEnd, '13:30'),
         attendance_grace_minutes: attGrace,
         attendance_workdays: attWorkdays.join(','),
       });
