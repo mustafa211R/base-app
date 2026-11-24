@@ -42,7 +42,7 @@ function initSchema_() {
     if (sh.getLastRow() === 0) {
       const cols = headers[name];
       sh.getRange(1, 1, 1, cols.length).setValues([cols]);
-      if (['IDs', 'Students', 'Teachers', 'Admin', 'Attendance', 'Complaints'].indexOf(name) >= 0) {
+      if (['Config', 'IDs', 'Students', 'Teachers', 'Admin', 'Attendance', 'Complaints'].indexOf(name) >= 0) {
         sh.getRange(1, 1, sh.getMaxRows(), cols.length).setNumberFormat('@');
       }
     }
@@ -74,12 +74,14 @@ function initSchema_() {
   ];
   const existingCfg = readAll_('Config');
   if (existingCfg.length === 0) {
-    sheet_('Config').getRange(2, 1, defaults.length, 2).setValues(defaults);
+    const cfgRange = sheet_('Config').getRange(2, 1, defaults.length, 2);
+    cfgRange.setNumberFormat('@');
+    cfgRange.setValues(defaults);
   } else {
     const existingKeys = new Set(existingCfg.map(r => String(r.key)));
     defaults.forEach(pair => {
       if (!existingKeys.has(pair[0])) {
-        appendObj_('Config', { key: pair[0], value: pair[1] }, false);
+        appendObj_('Config', { key: pair[0], value: pair[1] }, true);
       }
     });
   }
@@ -156,6 +158,14 @@ function adminProfileGet_() {
   const a = readAll_('Admin')[0];
   if (!a) return null;
   const copy = Object.assign({}, a);
+  copy.full_name = String(copy.full_name || '');
+  copy.certificate = String(copy.certificate || 'بكالوريوس');
+  copy.specialty = String(copy.specialty || '');
+  copy.start_date = asDateStr_(copy.start_date);
+  copy.phone = String(copy.phone || '');
+  copy.whatsapp = String(copy.whatsapp || '');
+  copy.username = String(copy.username || '');
+  copy.sec_question = String(copy.sec_question || '');
   delete copy.salt; delete copy.pass_hash; delete copy.sec_answer_hash;
   return copy;
 }
@@ -175,7 +185,7 @@ function adminProfileSave_(req, ctx) {
   cur.full_name = String(req.full_name || cur.full_name);
   cur.certificate = String(req.certificate || cur.certificate);
   cur.specialty = String(req.specialty !== undefined ? req.specialty : cur.specialty);
-  cur.start_date = String(req.start_date || cur.start_date);
+  cur.start_date = String(req.start_date || asDateStr_(cur.start_date));
   cur.phone = String(req.phone !== undefined ? req.phone : cur.phone);
   cur.whatsapp = String(req.whatsapp !== undefined ? req.whatsapp : cur.whatsapp);
   cur.username = String(req.username || cur.username);
@@ -189,11 +199,11 @@ function adminProfileSave_(req, ctx) {
 function adminSchoolSave_(req, ctx) {
   const cfg = config_();
   const attStart = req.attendance_start_time !== undefined
-    ? String(req.attendance_start_time).trim()
-    : (cfg.attendance_start_time || '08:00');
+    ? asHHMMStr_(req.attendance_start_time)
+    : (asHHMMStr_(cfg.attendance_start_time) || '08:00');
   const attEnd = req.attendance_end_time !== undefined
-    ? String(req.attendance_end_time).trim()
-    : (cfg.attendance_end_time || '13:30');
+    ? asHHMMStr_(req.attendance_end_time)
+    : (asHHMMStr_(cfg.attendance_end_time) || '13:30');
   parseTimeMinutes_(attStart);
   parseTimeMinutes_(attEnd);
 
@@ -228,12 +238,22 @@ function adminSchoolSave_(req, ctx) {
       ? overrides[k]
       : (req[k] !== undefined ? String(req[k]) : String(cfg[k] || ''));
     const row = findRow_('Config', 'key', k);
-    if (row) sheet_('Config').getRange(row, 2).setValue(val);
-    else appendObj_('Config', { key: k, value: val }, false);
+    if (row) {
+      const cell = sheet_('Config').getRange(row, 2);
+      cell.setNumberFormat('@');
+      cell.setValue(val);
+    } else {
+      appendObj_('Config', { key: k, value: val }, true);
+    }
   });
   const logoRow = findRow_('Config', 'key', 'logo_file_id');
-  if (logoRow) sheet_('Config').getRange(logoRow, 2).setValue(logoId);
-  else appendObj_('Config', { key: 'logo_file_id', value: logoId }, false);
+  if (logoRow) {
+    const cell = sheet_('Config').getRange(logoRow, 2);
+    cell.setNumberFormat('@');
+    cell.setValue(logoId);
+  } else {
+    appendObj_('Config', { key: 'logo_file_id', value: logoId }, true);
+  }
 
   clearCache_(['cfg']);
   if (readAll_('Stages').length === 0) stageApplyDefaults_({ school_type: req.school_type || cfg.school_type }, ctx);
