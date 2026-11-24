@@ -211,6 +211,36 @@ export function initSchema(): void {
       stage_at_time TEXT NOT NULL,
       class_at_time TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS Attendance (
+      att_id TEXT PRIMARY KEY,
+      teacher_id TEXT NOT NULL,
+      teacher_name TEXT NOT NULL,
+      att_date TEXT NOT NULL,
+      check_in_time TEXT NOT NULL DEFAULT '',
+      check_out_time TEXT NOT NULL DEFAULT '',
+      method TEXT NOT NULL DEFAULT 'digital',
+      status TEXT NOT NULL DEFAULT 'on_time',
+      late_minutes INTEGER NOT NULL DEFAULT 0,
+      device_note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(teacher_id, att_date)
+    );
+
+    CREATE TABLE IF NOT EXISTS Complaints (
+      complaint_id TEXT PRIMARY KEY,
+      student_id TEXT NOT NULL,
+      student_name TEXT NOT NULL,
+      class_label TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT 'أخرى',
+      title TEXT NOT NULL,
+      details TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      admin_reply TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   const defaultConfig: Array<[string, string]> = [
@@ -230,7 +260,12 @@ export function initSchema(): void {
     ['pass_mark', '50'],
     ['annual_effort_formula', 'iraqi_avg'],
     ['final_score_formula', 'avg_effort_final'],
-    ['schema_version', '1'],
+    ['education_access_code', ''],
+    ['attendance_start_time', '08:00'],
+    ['attendance_end_time', '13:30'],
+    ['attendance_grace_minutes', '15'],
+    ['attendance_workdays', '0,1,2,3,4'],
+    ['schema_version', '2'],
   ];
 
   const insertCfg = db.prepare('INSERT OR IGNORE INTO Config (key, value) VALUES (?, ?)');
