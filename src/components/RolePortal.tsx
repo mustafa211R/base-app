@@ -9,9 +9,10 @@ import {
   AlertCircle,
   CheckCircle2,
   Upload,
+  Landmark,
 } from 'lucide-react';
 import { formatIdGrouped, luhnValid, normalizeIdDigits } from '../../shared/luhn.ts';
-import type { AuthSession, PublicSchoolData, Role, SchoolType } from '../../shared/types.ts';
+import type { AuthSession, PublicSchoolData, SchoolType } from '../../shared/types.ts';
 import {
   api,
   BaseApiError,
@@ -20,6 +21,7 @@ import {
   SCHOOL_TYPE_LABELS,
   setAuthToken,
 } from '../lib/api.ts';
+import { DeveloperCard, DeveloperFooter } from './DeveloperFooter.tsx';
 
 interface RolePortalProps {
   publicData: PublicSchoolData;
@@ -28,7 +30,7 @@ interface RolePortalProps {
   onRefreshPublic: () => Promise<void>;
 }
 
-type PortalView = 'select' | 'student' | 'teacher' | 'admin' | 'setup';
+type PortalView = 'select' | 'student' | 'teacher' | 'admin' | 'education' | 'setup';
 
 export function RolePortal({
   publicData,
@@ -36,18 +38,30 @@ export function RolePortal({
   onEnterGuest,
   onRefreshPublic,
 }: RolePortalProps) {
-  const [view, setView] = useState<PortalView>(publicData.initialized ? 'select' : 'setup');
+  const initialQuery = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const queryRole = initialQuery?.get('role');
+  const queryId = normalizeIdDigits(initialQuery?.get('id') || '');
+  const initialView: PortalView = !publicData.initialized
+    ? 'setup'
+    : queryRole === 'student' || queryRole === 'teacher' || queryRole === 'admin' || queryRole === 'education'
+      ? queryRole
+      : 'select';
+
+  const [view, setView] = useState<PortalView>(initialView);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [lockoutSec, setLockoutSec] = useState(0);
 
   // Student / Teacher login state
-  const [idInput, setIdInput] = useState('');
+  const [idInput, setIdInput] = useState(queryId ? formatIdGrouped(queryId) : '');
   const [pinInput, setPinInput] = useState('');
 
   // Admin login state
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+
+  // Education Directorate login state
+  const [eduCode, setEduCode] = useState('');
 
   // First-run setup state
   const [setupKey, setSetupKey] = useState('');
@@ -80,6 +94,7 @@ export function RolePortal({
     setIdInput('');
     setPinInput('');
     setPassword('');
+    setEduCode('');
     setView(next);
   }
 
@@ -142,11 +157,48 @@ export function RolePortal({
     }
   }
 
+  async function handleEducationLogin(e: React.FormEvent) {
+    e.preventDefault();
+    resetErrors();
+    if (!eduCode.trim()) {
+      setErrorMsg('يرجى إدخال كود قسم التربية المعتمد من مدير المدرسة');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await api<AuthSession>('auth.login', {
+        role: 'education',
+        access_code: eduCode.trim(),
+      });
+      setAuthToken(res.token);
+      onAuthenticated(res);
+    } catch (err) {
+      if (err instanceof BaseApiError && err.code === 'TOO_MANY_ATTEMPTS') {
+        setLockoutSec(Number(err.meta?.retryAfterSec || 900));
+      }
+      setErrorMsg(formatErrorAr(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleFirstSetup(e: React.FormEvent) {
     e.preventDefault();
     resetErrors();
-    if (!schoolName.trim() || !adminFullName.trim() || adminUsername.trim().length < 4 || adminPassword.length < 8) {
-      setErrorMsg('يرجى إدخال اسم المدرسة واسم المدير واسم مستخدم (4 أحرف+) وكلمة مرور (8 رموز+)');
+    if (!schoolName.trim()) {
+      setErrorMsg('يرجى إدخال اسم المدرسة');
+      return;
+    }
+    if (!adminFullName.trim()) {
+      setErrorMsg('يرجى إدخال اسم المدير الكامل');
+      return;
+    }
+    if (adminUsername.trim().length < 4) {
+      setErrorMsg(`اسم المستخدم يجب أن يكون 4 أحرف على الأقل (المدخل حالياً: ${adminUsername.trim().length})`);
+      return;
+    }
+    if (adminPassword.length < 8) {
+      setErrorMsg(`كلمة المرور يجب أن تكون 8 رموز على الأقل (المدخل حالياً: ${adminPassword.length})`);
       return;
     }
     setLoading(true);
@@ -229,11 +281,11 @@ export function RolePortal({
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
                 <button
                   type="button"
                   onClick={() => switchView('student')}
-                  className="bg-white border border-slate-200 hover:border-[#0F294A] rounded-xl p-6 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
+                  className="bg-white border border-slate-200 hover:border-[#0F294A] rounded-xl p-5 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
                 >
                   <div className="w-11 h-11 rounded-lg bg-[#0F294A]/10 text-[#0F294A] flex items-center justify-center">
                     <GraduationCap className="w-6 h-6" />
@@ -247,21 +299,21 @@ export function RolePortal({
                 <button
                   type="button"
                   onClick={() => switchView('teacher')}
-                  className="bg-white border border-slate-200 hover:border-emerald-700 rounded-xl p-6 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
+                  className="bg-white border border-slate-200 hover:border-emerald-700 rounded-xl p-5 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
                 >
                   <div className="w-11 h-11 rounded-lg bg-emerald-700/10 text-emerald-800 flex items-center justify-center">
                     <BookOpen className="w-6 h-6" />
                   </div>
                   <div>
                     <div className="text-lg font-bold text-slate-900">مدرس</div>
-                    <p className="text-xs text-slate-500 mt-1">الدخول برقم الهوية التدريسية (8 أرقام)</p>
+                    <p className="text-xs text-slate-500 mt-1">الدخول برقم الهوية التدريسية والبصمة</p>
                   </div>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => switchView('admin')}
-                  className="bg-white border border-slate-200 hover:border-[#B8860B] rounded-xl p-6 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
+                  className="bg-white border border-slate-200 hover:border-[#B8860B] rounded-xl p-5 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
                 >
                   <div className="w-11 h-11 rounded-lg bg-amber-600/10 text-[#9A7008] flex items-center justify-center">
                     <ShieldCheck className="w-6 h-6" />
@@ -274,8 +326,22 @@ export function RolePortal({
 
                 <button
                   type="button"
+                  onClick={() => switchView('education')}
+                  className="bg-white border border-slate-200 hover:border-sky-700 rounded-xl p-5 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
+                >
+                  <div className="w-11 h-11 rounded-lg bg-sky-700/10 text-sky-800 flex items-center justify-center">
+                    <Landmark className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <div className="text-lg font-bold text-slate-900">قسم التربية</div>
+                    <p className="text-xs text-slate-500 mt-1">بوابة مديرية التربية والإشراف (بكود المدرسة)</p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
                   onClick={onEnterGuest}
-                  className="bg-white border border-slate-200 hover:border-slate-400 rounded-xl p-6 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
+                  className="bg-white border border-slate-200 hover:border-slate-400 rounded-xl p-5 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
                 >
                   <div className="w-11 h-11 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center">
                     <Eye className="w-6 h-6" />
@@ -286,6 +352,8 @@ export function RolePortal({
                   </div>
                 </button>
               </div>
+
+              <DeveloperCard />
             </div>
           )}
 
@@ -440,6 +508,66 @@ export function RolePortal({
             </div>
           )}
 
+          {view === 'education' && (
+            <div className="max-w-md mx-auto bg-white border border-slate-200 rounded-xl p-6 sm:p-8 space-y-6">
+              <div>
+                <div className="flex items-center gap-2 text-sky-900">
+                  <Landmark className="w-5 h-5 text-sky-700" />
+                  <h2 className="text-xl font-bold text-slate-900">دخول قسم التربية والإشراف</h2>
+                </div>
+                <p className="text-sm text-slate-500 mt-1">
+                  بوابة خاصة بمديرية التربية والمشرفين للاطلاع على الإحصاءات وسجلات الحضور والشكاوى دون تعديل
+                </p>
+              </div>
+
+              {!publicData.educationEnabled && (
+                <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs">
+                  تنبيه: لم يقم مدير المدرسة بتعيين كود قسم التربية بعد من شاشة «بيانات المدرسة».
+                </div>
+              )}
+
+              {errorMsg && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-800 text-sm flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                  <div>
+                    <div>{errorMsg}</div>
+                    {lockoutSec > 0 && (
+                      <div className="font-mono tabular-nums text-xs mt-1">
+                        الوقت المتبقي: {Math.floor(lockoutSec / 60)}:{String(lockoutSec % 60).padStart(2, '0')}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <form onSubmit={handleEducationLogin} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                    كود دخول مديرية التربية والإشراف
+                  </label>
+                  <input
+                    type="password"
+                    dir="ltr"
+                    value={eduCode}
+                    onChange={(e) => {
+                      resetErrors();
+                      setEduCode(e.target.value);
+                    }}
+                    placeholder="أدخل الكود المعتمد من مدير المدرسة"
+                    className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg font-mono text-center text-base focus:outline-none focus:ring-2 focus:ring-sky-700"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={loading || lockoutSec > 0}
+                  className="w-full py-2.5 px-4 bg-[#0F294A] hover:bg-[#163864] disabled:opacity-50 text-white font-medium rounded-lg transition-colors cursor-pointer"
+                >
+                  {loading ? 'جارٍ التحقق من الكود...' : 'دخول قسم التربية والإشراف'}
+                </button>
+              </form>
+            </div>
+          )}
+
           {view === 'setup' && (
             <div className="max-w-2xl mx-auto bg-white border border-slate-200 rounded-xl p-6 sm:p-8 space-y-6">
               <div className="border-b border-slate-200 pb-4">
@@ -562,10 +690,13 @@ export function RolePortal({
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-100">
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">اسم المستخدم للدخول * (4 أحرف+)</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      اسم المستخدم للدخول * <span className="text-xs text-slate-500">(4 أحرف على الأقل · {adminUsername.trim().length}/4)</span>
+                    </label>
                     <input
                       type="text"
                       dir="ltr"
+                      minLength={4}
                       value={adminUsername}
                       onChange={(e) => setAdminUsername(e.target.value)}
                       placeholder="principal"
@@ -574,10 +705,13 @@ export function RolePortal({
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">كلمة المرور * (8 رموز+)</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      كلمة المرور * <span className="text-xs text-slate-500">(8 رموز على الأقل · {adminPassword.length}/8)</span>
+                    </label>
                     <input
                       type="password"
                       dir="ltr"
+                      minLength={8}
                       value={adminPassword}
                       onChange={(e) => setAdminPassword(e.target.value)}
                       placeholder="••••••••"
@@ -622,9 +756,7 @@ export function RolePortal({
         </div>
       </main>
 
-      <footer className="py-4 px-6 border-t border-slate-200 bg-white text-center text-xs text-slate-500">
-        نظام base لإدارة المدرسة · جميع البيانات محمية بصلاحيات الحقول على الخادم
-      </footer>
+      <DeveloperFooter />
     </div>
   );
 }
