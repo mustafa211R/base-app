@@ -26,6 +26,7 @@ import type {
 import { api, formatErrorAr } from '../lib/api.ts';
 import { AdminScreensPart1 } from './AdminScreensPart1.tsx';
 import { AdminScreensPart2 } from './AdminScreensPart2.tsx';
+import { DeveloperFooter } from './DeveloperFooter.tsx';
 
 interface AdminConsoleProps {
   publicData: PublicSchoolData;
@@ -61,7 +62,7 @@ const SIDEBAR_ITEMS = [
   { id: 7, label: '7. الصلاحيات والخصوصية', short: 'الصلاحيات', icon: Shield },
   { id: 8, label: '8. إدارة البيانات', short: 'البيانات', icon: Database },
   { id: 9, label: '9. النسخ الاحتياطي والسنة', short: 'النسخ', icon: Archive },
-  { id: 10, label: 'الأوراق الـ 14 الحية', short: 'الأوراق', icon: Table },
+  { id: 10, label: 'الأوراق الـ 16 الحية', short: 'الأوراق', icon: Table },
 ] as const;
 
 export function AdminConsole({ publicData, onRefreshPublic, onLogout }: AdminConsoleProps) {
@@ -276,6 +277,8 @@ export function AdminConsole({ publicData, onRefreshPublic, onLogout }: AdminCon
           )}
         </main>
       </div>
+
+      <DeveloperFooter />
     </div>
   );
 }
