@@ -19,8 +19,12 @@ import { formatIdGrouped } from '../../shared/luhn.ts';
 import type {
   AnnouncementRow,
   AssignmentRow,
+  AttendanceRow,
+  AttendanceSchedule,
   AuditLogRow,
   ClassRow,
+  ComplaintRow,
+  ComplaintStatus,
   EnrollStatus,
   IdRow,
   PermissionRow,
@@ -31,12 +35,13 @@ import type {
 } from '../../shared/types.ts';
 import {
   api,
+  COMPLAINT_STATUS_LABELS,
   downloadExcelBackup,
   ENROLL_STATUS_LABELS,
 } from '../lib/api.ts';
 
 interface Part2Props {
-  screen: 6 | 7 | 8 | 9 | 10; // 10 = 14-Sheets Inspector
+  screen: 6 | 7 | 8 | 9 | 10; // 10 = 16-Sheets Inspector
   publicData: PublicSchoolData;
   config: SchoolConfig | null;
   stages: StageRow[];
@@ -64,6 +69,8 @@ const SHEET_NAMES = [
   'Announcements',
   'Audit_Log',
   'Archive_Grades',
+  'Attendance',
+  'Complaints',
 ];
 
 export function AdminScreensPart2({
@@ -96,10 +103,15 @@ export function AdminScreensPart2({
   const [permRows, setPermRows] = useState<PermissionRow[]>(permissions);
 
   // Screen 8: Data Management sub-tabs
-  const [subTab, setSubTab] = useState<'students' | 'teachers' | 'subjects' | 'grades' | 'announcements'>('students');
+  const [subTab, setSubTab] = useState<'students' | 'teachers' | 'subjects' | 'grades' | 'announcements' | 'attendance' | 'complaints'>('students');
   const [students, setStudents] = useState<Array<Record<string, unknown>>>([]);
   const [teachers, setTeachers] = useState<Array<Record<string, unknown>>>([]);
   const [assignments, setAssignments] = useState<Array<AssignmentRow & { subject_name?: string; class_label?: string; teacher_name?: string }>>([]);
+  const [attendanceLog, setAttendanceLog] = useState<{ todayDate: string; schedule: AttendanceSchedule; records: AttendanceRow[] } | null>(null);
+  const [attStatusFilter, setAttStatusFilter] = useState<'all' | 'on_time' | 'late'>('all');
+  const [complaints, setComplaints] = useState<ComplaintRow[]>([]);
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [statusDrafts, setStatusDrafts] = useState<Record<string, ComplaintStatus>>({});
   const [dataSearch, setDataSearch] = useState('');
   const [transferTarget, setTransferTarget] = useState<Record<string, string>>({});
   const [statusNoteMap, setStatusNoteMap] = useState<Record<string, string>>({});
@@ -162,14 +174,18 @@ export function AdminScreensPart2({
 
   async function loadDataMgmt() {
     try {
-      const [sRes, tRes, aRes] = await Promise.all([
+      const [sRes, tRes, aRes, attRes, cmpRes] = await Promise.all([
         api<{ items: Array<Record<string, unknown>> }>('student.list'),
         api<Array<Record<string, unknown>>>('teacher.list'),
         api<Array<AssignmentRow & { subject_name?: string; class_label?: string; teacher_name?: string }>>('admin.assignmentsList'),
+        api<{ todayDate: string; schedule: AttendanceSchedule; records: AttendanceRow[] }>('attendance.list'),
+        api<ComplaintRow[]>('complaints.list'),
       ]);
       setStudents(sRes.items || []);
       setTeachers(tRes || []);
       setAssignments(aRes || []);
+      setAttendanceLog(attRes);
+      setComplaints(cmpRes || []);
     } catch (err) {
       onError(err);
     }
@@ -528,6 +544,8 @@ export function AdminScreensPart2({
               { id: 'teachers', label: 'المدرسون' },
               { id: 'subjects', label: 'المواد والإسناد' },
               { id: 'grades', label: 'الدرجات واستيراد Excel' },
+              { id: 'attendance', label: 'سجل البصمة والحضور' },
+              { id: 'complaints', label: `شكاوى الطلبة (${complaints.filter((c) => c.status !== 'resolved').length})` },
               { id: 'announcements', label: 'الإعلانات' },
             ].map((t) => (
               <button
@@ -543,7 +561,7 @@ export function AdminScreensPart2({
             ))}
           </div>
 
-          {(subTab === 'students' || subTab === 'teachers') && (
+          {(subTab === 'students' || subTab === 'teachers' || subTab === 'attendance' || subTab === 'complaints') && (
             <input
               type="text"
               value={dataSearch}
@@ -1026,6 +1044,193 @@ export function AdminScreensPart2({
             </div>
           </div>
         )}
+        {subTab === 'attendance' && (
+          <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="font-bold text-slate-900 text-sm">سجل البصمة الحضورية للهيئة التدريسية (للقراءة فقط)</h3>
+                {attendanceLog && (
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    توقيت البصمة المحدد: <span className="font-mono">{attendanceLog.schedule.attendance_start_time}</span> –{' '}
+                    <span className="font-mono">{attendanceLog.schedule.attendance_end_time}</span> · سماح{' '}
+                    <span className="font-mono tabular-nums">{attendanceLog.schedule.attendance_grace_minutes}</span> د · لتعديل الأوقات راجع شاشة 2 (بيانات المدرسة).
+                  </p>
+                )}
+              </div>
+              <select
+                value={attStatusFilter}
+                onChange={(e) => setAttStatusFilter(e.target.value as 'all' | 'on_time' | 'late')}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
+              >
+                <option value="all">جميع الحالات</option>
+                <option value="on_time">بالوقت فقط</option>
+                <option value="late">المتأخرون فقط</option>
+              </select>
+            </div>
+
+            <div className="overflow-x-auto max-h-96">
+              <table className="w-full text-xs text-right">
+                <thead>
+                  <tr className="bg-slate-100 text-slate-700 border-b border-slate-200">
+                    <th className="py-2 px-3">التاريخ</th>
+                    <th className="py-2 px-3">المدرس</th>
+                    <th className="py-2 px-3 text-center">وقت الحضور</th>
+                    <th className="py-2 px-3 text-center">وقت الانصراف</th>
+                    <th className="py-2 px-3 text-center">الحالة</th>
+                    <th className="py-2 px-3 text-center">دقائق التأخير</th>
+                    <th className="py-2 px-3">الملاحظة</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {(attendanceLog?.records || [])
+                    .filter((r) => {
+                      if (attStatusFilter !== 'all' && r.status !== attStatusFilter) return false;
+                      if (!q) return true;
+                      return (
+                        r.teacher_name.toLowerCase().includes(q) ||
+                        r.teacher_id.includes(q) ||
+                        r.att_date.includes(q)
+                      );
+                    })
+                    .map((r) => (
+                      <tr key={r.att_id} className="hover:bg-slate-50">
+                        <td className="py-2 px-3 font-mono tabular-nums" dir="ltr">{r.att_date}</td>
+                        <td className="py-2 px-3 font-medium text-slate-900">{r.teacher_name}</td>
+                        <td className="py-2 px-3 text-center font-mono tabular-nums" dir="ltr">{r.check_in_time || '—'}</td>
+                        <td className="py-2 px-3 text-center font-mono tabular-nums" dir="ltr">{r.check_out_time || '—'}</td>
+                        <td className="py-2 px-3 text-center font-medium">
+                          <span className={r.status === 'on_time' ? 'text-emerald-700' : 'text-amber-700'}>
+                            {r.status === 'on_time' ? 'بالوقت' : 'متأخر'}
+                          </span>
+                        </td>
+                        <td className="py-2 px-3 text-center font-mono tabular-nums">
+                          {r.late_minutes > 0 ? `${r.late_minutes} د` : '0'}
+                        </td>
+                        <td className="py-2 px-3 text-slate-600">{r.device_note || '—'}</td>
+                      </tr>
+                    ))}
+                  {(!attendanceLog || attendanceLog.records.length === 0) && (
+                    <tr>
+                      <td colSpan={7} className="py-8 text-center text-slate-400">
+                        لا توجد سجلات بصمة حضور حتى الآن
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {subTab === 'complaints' && (
+          <div className="space-y-4">
+            <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                <h3 className="font-bold text-slate-900 text-sm">شكاوى ومقترحات الطلبة</h3>
+                <span className="text-xs text-slate-500">تُعرض الشكاوى أيضاً في بوابة مديرية التربية والإشراف</span>
+              </div>
+
+              {complaints.filter(
+                (c) =>
+                  !q ||
+                  c.title.toLowerCase().includes(q) ||
+                  c.student_name.toLowerCase().includes(q) ||
+                  c.details.toLowerCase().includes(q)
+              ).length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-6">لا توجد شكاوى مسجلة</p>
+              ) : (
+                <div className="space-y-3">
+                  {complaints
+                    .filter(
+                      (c) =>
+                        !q ||
+                        c.title.toLowerCase().includes(q) ||
+                        c.student_name.toLowerCase().includes(q) ||
+                        c.details.toLowerCase().includes(q)
+                    )
+                    .map((c) => {
+                      const curStatus = statusDrafts[c.complaint_id] || c.status;
+                      const curReply = replyDrafts[c.complaint_id] ?? c.admin_reply ?? '';
+                      return (
+                        <div key={c.complaint_id} className="p-4 border border-slate-200 rounded-xl space-y-3">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <div className="font-bold text-slate-900 text-sm">{c.title}</div>
+                              <div className="text-xs text-slate-500 mt-0.5">
+                                الطالب: {c.student_name} · {c.class_label || '—'} · التصنيف: {c.category} ·{' '}
+                                <span className="font-mono" dir="ltr">{c.created_at.slice(0, 10)}</span>
+                              </div>
+                            </div>
+                            <span
+                              className={`text-xs font-semibold ${
+                                c.status === 'resolved'
+                                  ? 'text-emerald-700'
+                                  : c.status === 'in_review'
+                                    ? 'text-amber-700'
+                                    : 'text-red-700'
+                              }`}
+                            >
+                              {COMPLAINT_STATUS_LABELS[c.status] || c.status}
+                            </span>
+                          </div>
+                          <p className="text-xs sm:text-sm text-slate-700">{c.details}</p>
+
+                          <div className="flex flex-col sm:flex-row gap-2 pt-2 border-t border-slate-100">
+                            <select
+                              value={curStatus}
+                              onChange={(e) =>
+                                setStatusDrafts((prev) => ({
+                                  ...prev,
+                                  [c.complaint_id]: e.target.value as ComplaintStatus,
+                                }))
+                              }
+                              className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
+                            >
+                              <option value="open">مفتوحة</option>
+                              <option value="in_review">قيد المتابعة</option>
+                              <option value="resolved">تمت المعالجة</option>
+                            </select>
+                            <input
+                              type="text"
+                              value={curReply}
+                              onChange={(e) =>
+                                setReplyDrafts((prev) => ({ ...prev, [c.complaint_id]: e.target.value }))
+                              }
+                              placeholder="اكتب رد الإدارة أو الإجراء المتخذ..."
+                              className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-xs"
+                            />
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={async () => {
+                                setBusy(true);
+                                try {
+                                  await api('complaints.updateStatus', {
+                                    complaint_id: c.complaint_id,
+                                    status: curStatus,
+                                    admin_reply: curReply,
+                                  });
+                                  await loadDataMgmt();
+                                  onSuccess('تم تحديث حالة الشكوى وحفظ الرد');
+                                } catch (err) {
+                                  onError(err);
+                                } finally {
+                                  setBusy(false);
+                                }
+                              }}
+                              className="px-4 py-1.5 bg-[#0F294A] hover:bg-[#163864] text-white text-xs font-medium rounded-lg cursor-pointer"
+                            >
+                              حفظ الرد والحالة
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1037,7 +1242,7 @@ export function AdminScreensPart2({
           <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
             <h2 className="text-lg font-bold text-slate-900">9. النسخ الاحتياطي والاستعادة (Excel .xlsx)</h2>
             <p className="text-xs text-slate-500">
-              تصدير جميع الأوراق الـ 14 إلى ملف Excel واحد، أو استعادة نسخة سابقة بعد تأكيد كلمة مرور المدير.
+              تصدير جميع الأوراق الـ 16 إلى ملف Excel واحد، أو استعادة نسخة سابقة بعد تأكيد كلمة مرور المدير.
             </p>
             <button
               type="button"
@@ -1161,14 +1366,14 @@ export function AdminScreensPart2({
     );
   }
 
-  // Screen 10: 14-Sheet Inspector
+  // Screen 10: 16-Sheet Inspector
   const columns = sheetRows.length > 0 ? Object.keys(sheetRows[0]) : [];
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-2">
           <Table className="w-5 h-5 text-[#0F294A]" />
-          <h2 className="text-lg font-bold text-slate-900">مستعرض الأوراق الـ 14 (Google Sheets Schema)</h2>
+          <h2 className="text-lg font-bold text-slate-900">مستعرض الأوراق الـ 16 (Google Sheets Schema)</h2>
         </div>
         <Users className="w-4 h-4 text-slate-400" />
       </div>
