@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import * as XLSX from 'xlsx';
 import {
   Database,
@@ -11,6 +11,9 @@ import {
   Trash2,
   Copy,
   FileSpreadsheet,
+  Eye,
+  EyeOff,
+  Wand2,
 } from 'lucide-react';
 import { formatIdGrouped } from '../../shared/luhn.ts';
 import type {
@@ -74,6 +77,14 @@ export function AdminScreensPart1({
   const [effortFormula, setEffortFormula] = useState(config?.annual_effort_formula || 'iraqi_avg');
   const [finalFormula, setFinalFormula] = useState(config?.final_score_formula || 'avg_effort_final');
   const [logoDataUrl, setLogoDataUrl] = useState<string | undefined>(undefined);
+  const [educationCode, setEducationCode] = useState(config?.education_access_code || '');
+  const [showEduCode, setShowEduCode] = useState(false);
+  const [attStart, setAttStart] = useState(config?.attendance_start_time || publicData.attendance_start_time || '08:00');
+  const [attEnd, setAttEnd] = useState(config?.attendance_end_time || publicData.attendance_end_time || '13:30');
+  const [attGrace, setAttGrace] = useState(config?.attendance_grace_minutes || String(publicData.attendance_grace_minutes ?? 15));
+  const [attWorkdays, setAttWorkdays] = useState<string[]>(
+    (config?.attendance_workdays || publicData.attendance_workdays || '0,1,2,3,4').split(',').filter(Boolean)
+  );
 
   // Screen 3: Admin Profile
   const [admFullName, setAdmFullName] = useState(String(adminProfile?.full_name || ''));
@@ -101,8 +112,21 @@ export function AdminScreensPart1({
   const [genCount, setGenCount] = useState('10');
   const [idFilterKind, setIdFilterKind] = useState<'all' | 'student' | 'teacher'>('all');
 
+  useEffect(() => {
+    if (!config) return;
+    setEducationCode(config.education_access_code || '');
+    setAttStart(config.attendance_start_time || '08:00');
+    setAttEnd(config.attendance_end_time || '13:30');
+    setAttGrace(config.attendance_grace_minutes || '15');
+    setAttWorkdays((config.attendance_workdays || '0,1,2,3,4').split(',').filter(Boolean));
+  }, [config]);
+
   function toggleShift(s: string) {
     setShifts((prev) => (prev.includes(s) ? (prev.length > 1 ? prev.filter((x) => x !== s) : prev) : [...prev, s]));
+  }
+
+  function toggleWorkday(day: string) {
+    setAttWorkdays((prev) => (prev.includes(day) ? (prev.length > 1 ? prev.filter((d) => d !== day) : prev) : [...prev, day]));
   }
 
   async function handleInitSchema() {
@@ -110,7 +134,7 @@ export function AdminScreensPart1({
     try {
       await api('admin.initSchema');
       await onRefreshAll();
-      onSuccess('تم التحقق من تهيئة الأوراق الـ 14 بنجاح');
+      onSuccess('تم التحقق من تهيئة الأوراق الـ 16 بنجاح');
     } catch (err) {
       onError(err);
     } finally {
@@ -166,9 +190,14 @@ export function AdminScreensPart1({
         annual_effort_formula: effortFormula,
         final_score_formula: finalFormula,
         logo_data_url: logoDataUrl,
+        education_access_code: educationCode.trim(),
+        attendance_start_time: attStart,
+        attendance_end_time: attEnd,
+        attendance_grace_minutes: attGrace,
+        attendance_workdays: attWorkdays.join(','),
       });
       await onRefreshAll();
-      onSuccess('تم حفظ بيانات المدرسة والإعدادات بنجاح');
+      onSuccess('تم حفظ بيانات المدرسة وإعدادات التربية والبصمة بنجاح');
     } catch (err) {
       onError(err);
     } finally {
@@ -320,7 +349,7 @@ export function AdminScreensPart1({
     const modeLabel =
       backendState.mode === 'apps_script'
         ? 'متصل مباشرة بـ Google Sheets عبر Google Apps Script Web App.'
-        : 'متصل بالخادم المحلي (SQLite) المتوافق مع أوراق Google Sheets الـ 14.';
+        : 'متصل بالخادم المحلي (SQLite) المتوافق مع أوراق Google Sheets الـ 16.';
     return (
       <div className="space-y-6">
         <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
@@ -340,7 +369,7 @@ export function AdminScreensPart1({
               className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#0F294A] hover:bg-[#163864] text-white text-sm font-medium rounded-lg cursor-pointer"
             >
               <RefreshCw className="w-4 h-4" />
-              <span>التحقق من الأوراق الـ 14</span>
+              <span>التحقق من الأوراق الـ 16</span>
             </button>
 
             <button
@@ -394,6 +423,71 @@ export function AdminScreensPart1({
             </button>
           </div>
           {extTestStatus && <p className="text-xs text-slate-700 font-medium">{extTestStatus}</p>}
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+          <div>
+            <h3 className="font-bold text-slate-900 text-base">روابط المشاركة العامة للطلاب والمدرسين والضيوف</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              الرابط الأساسي للمدرسة هو رابط موقع Vercel نفسه. يمكنك مشاركة البوابة الموحدة أو روابط مباشرة لكل فئة.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {[
+              { label: 'البوابة العامة للمدرسة (الكل)', qs: '' },
+              { label: 'رابط دخول الطلاب مباشرة', qs: '?role=student' },
+              { label: 'رابط دخول المدرسين مباشرة', qs: '?role=teacher' },
+              { label: 'رابط قسم التربية والإشراف', qs: '?role=education' },
+              { label: 'رابط صفحة الضيوف والزوار', qs: '?role=guest' },
+            ].map((item) => {
+              const origin = typeof window !== 'undefined' ? window.location.origin : '';
+              const baseUrl = `${origin}/${item.qs}`;
+              const withApi =
+                backendState.mode === 'apps_script' && backendState.appsScriptUrl
+                  ? `${origin}/${item.qs ? `${item.qs}&` : '?'}api=${encodeURIComponent(backendState.appsScriptUrl)}`
+                  : baseUrl;
+              return (
+                <div key={item.label} className="border border-slate-200 rounded-lg p-3 space-y-2 bg-slate-50/50">
+                  <div className="text-xs font-semibold text-slate-800">{item.label}</div>
+                  <div className="text-[11px] font-mono text-slate-600 truncate" dir="ltr">
+                    {baseUrl}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(baseUrl);
+                        onSuccess(`تم نسخ: ${item.label}`);
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-800 hover:bg-slate-50 cursor-pointer"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>نسخ الرابط المختصر</span>
+                    </button>
+                    {backendState.mode === 'apps_script' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(withApi);
+                          onSuccess(`تم نسخ الرابط المضمّن بالربط: ${item.label}`);
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#0F294A] text-white rounded text-xs hover:bg-[#163864] cursor-pointer"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>نسخ مع رابط Sheets</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {backendState.mode === 'apps_script' && (
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+              ملاحظة للنشر: لضمان عمل «الرابط المختصر» لجميع الطلاب من أي جهاز دون كتابة رابط Sheets، تأكد من إضافة المتغير{' '}
+              <span className="font-mono font-semibold">VITE_APPS_SCRIPT_URL</span> في إعدادات Vercel بقيمة رابط الـ Web App العامل، ثم إعادة النشر.
+            </p>
+          )}
         </div>
       </div>
     );
@@ -555,6 +649,119 @@ export function AdminScreensPart1({
               <option value="avg_effort_final">متوسط (السعي + نهاية السنة) ÷ 2</option>
               <option value="weighted_40_60">أوزان (40% السعي + 60% نهاية السنة)</option>
             </select>
+          </div>
+        </div>
+
+        <div className="pt-4 border-t border-slate-200 space-y-4">
+          <div>
+            <h3 className="font-bold text-slate-900 text-base">إعدادات قسم التربية والبصمة الحضورية</h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              يحدد المدير هنا كود الدخول الخاص بمديرية التربية والإشراف، ومواعيد البصمة الحضورية وفترة السماح للموظفين.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                كود دخول قسم التربية والإشراف (يُمنح للمشرف ومديرية التربية)
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <div className="relative flex-1 min-w-[200px]">
+                  <input
+                    type={showEduCode ? 'text' : 'password'}
+                    dir="ltr"
+                    value={educationCode}
+                    onChange={(e) => setEducationCode(e.target.value)}
+                    placeholder="اتركه فارغاً لتعطيل قسم التربية، أو اكتب كوداً سرياً..."
+                    className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg font-mono text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowEduCode((v) => !v)}
+                    className="absolute left-2.5 top-2.5 text-slate-400 hover:text-slate-700 cursor-pointer"
+                    title={showEduCode ? 'إخفاء الكود' : 'إظهار الكود'}
+                  >
+                    {showEduCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+                    let code = 'EDU-';
+                    for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+                    setEducationCode(code);
+                    setShowEduCode(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 border border-slate-300 rounded-lg text-xs font-medium hover:bg-slate-50 cursor-pointer"
+                >
+                  <Wand2 className="w-3.5 h-3.5 text-[#B8860B]" />
+                  <span>توليد كود عشوائي</span>
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">وقت بدء البصمة الحضورية</label>
+              <input
+                type="time"
+                dir="ltr"
+                value={attStart}
+                onChange={(e) => setAttStart(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">وقت انتهاء الدوام (الانصراف)</label>
+              <input
+                type="time"
+                dir="ltr"
+                value={attEnd}
+                onChange={(e) => setAttEnd(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">فترة السماح بالتأخير (بالدقائق)</label>
+              <input
+                type="number"
+                min={0}
+                max={180}
+                value={attGrace}
+                onChange={(e) => setAttGrace(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1.5">أيام الدوام الأسبوعية</label>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { id: '0', label: 'الأحد' },
+                  { id: '1', label: 'الإثنين' },
+                  { id: '2', label: 'الثلاثاء' },
+                  { id: '3', label: 'الأربعاء' },
+                  { id: '4', label: 'الخميس' },
+                  { id: '5', label: 'الجمعة' },
+                  { id: '6', label: 'السبت' },
+                ].map((d) => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => toggleWorkday(d.id)}
+                    className={`px-2.5 py-1.5 rounded-md text-xs border cursor-pointer ${
+                      attWorkdays.includes(d.id)
+                        ? 'bg-[#0F294A] text-white border-[#0F294A]'
+                        : 'bg-white text-slate-600 border-slate-300'
+                    }`}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
 
