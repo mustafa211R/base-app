@@ -665,11 +665,19 @@ export function WebsiteViews({ role, session, publicData, onLogout }: WebsiteVie
                   <p className="text-xs text-slate-500 mt-1">
                     توقيت الدوام المحدد من الإدارة: من{' '}
                     <span className="font-mono font-semibold text-slate-800" dir="ltr">
-                      {myAttendance?.schedule.attendance_start_time || publicData.attendance_start_time}
+                      {(() => {
+                        const v = String(myAttendance?.schedule.attendance_start_time || publicData.attendance_start_time || '');
+                        const m = /^(\d{1,2}:\d{2})/.exec(v);
+                        return m ? m[1] : '08:00';
+                      })()}
                     </span>{' '}
                     إلى{' '}
                     <span className="font-mono font-semibold text-slate-800" dir="ltr">
-                      {myAttendance?.schedule.attendance_end_time || publicData.attendance_end_time}
+                      {(() => {
+                        const v = String(myAttendance?.schedule.attendance_end_time || publicData.attendance_end_time || '');
+                        const m = /^(\d{1,2}:\d{2})/.exec(v);
+                        return m ? m[1] : '13:30';
+                      })()}
                     </span>{' '}
                     · فترة سماح{' '}
                     <span className="font-mono tabular-nums font-semibold">
