@@ -148,6 +148,28 @@ export function AdminScreensPart2({
   }, [permissions]);
 
   useEffect(() => {
+    if (!config) return;
+    setTeacherVis(config.teacher_profile_visibility || 'all');
+    setStudentVis(config.student_profile_visibility || 'all');
+    setGuestMode(config.guest_student_list || 'full');
+    setReqPin(config.require_teacher_pin === 'TRUE');
+    setAllowSelfEdit(config.allow_student_self_edit === 'TRUE');
+  }, [config]);
+
+  useEffect(() => {
+    if (!newSubStage && stages.length > 0) setNewSubStage(stages[0].stage_id);
+  }, [stages, newSubStage]);
+
+  useEffect(() => {
+    if (!importSubjectId && subjects.length > 0) setImportSubjectId(subjects[0].subject_id);
+    if (!gradeSubjectId && subjects.length > 0) setGradeSubjectId(subjects[0].subject_id);
+  }, [subjects, importSubjectId, gradeSubjectId]);
+
+  useEffect(() => {
+    if (!gradeClassId && classes.length > 0) setGradeClassId(classes[0].class_id);
+  }, [classes, gradeClassId]);
+
+  useEffect(() => {
     if (screen === 6) {
       const targetCards = idsList.filter((i) => i.kind === cardKind && i.status !== 'disabled').slice(0, 60);
       Promise.all(
