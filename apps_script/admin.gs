@@ -1,61 +1,87 @@
-// ===== admin.gs : تهيئة الأوراق الـ 14 والعمليات الإدارية =====
-const SCHEMA_HEADERS = {
-  Config: ['key', 'value'],
-  Admin: ['admin_id', 'full_name', 'certificate', 'specialty', 'start_date', 'phone', 'whatsapp', 'username', 'salt', 'pass_hash', 'sec_question', 'sec_answer_hash', 'updated_at'],
-  Stages: ['stage_id', 'name_ar', 'level_type', 'sort_order', 'track'],
-  Classes: ['class_id', 'stage_id', 'section', 'label', 'capacity', 'status'],
-  Subjects: ['subject_id', 'name_ar', 'stage_id', 'weekly_periods', 'active'],
-  IDs: ['id', 'kind', 'class_id', 'status', 'pin_hash', 'generated_at', 'registered_at', 'last_login', 'card_printed'],
-  Students: ['student_id', 'full_name', 'mother_name', 'gender', 'birth_date', 'address', 'guardian_name', 'guardian_phone', 'photo_file_id', 'prev_school', 'prev_stage', 'prev_average', 'reg_reason', 'failed_years', 'dropout_years', 'enroll_date', 'health_note', 'class_id', 'enroll_status', 'status_note', 'notes', 'updated_at'],
-  Teachers: ['teacher_id', 'full_name', 'mother_name', 'gender', 'birth_date', 'degree', 'specialty', 'university', 'college', 'grad_year', 'job_title', 'hire_date', 'start_date', 'bio_cv', 'subjects', 'phone', 'whatsapp', 'email', 'address', 'photo_file_id', 'status', 'updated_at'],
-  Assignments: ['assign_id', 'teacher_id', 'subject_id', 'class_id', 'year'],
-  Grades: ['grade_key', 'student_id', 'subject_id', 'year', 'm1', 'm2', 'avg_t1', 'mid_year', 'm3', 'm4', 'avg_t2', 'annual_effort', 'final_exam', 'final', 'round', 'entered_by', 'updated_at'],
-  Permissions: ['id', 'entity', 'field', 'label_ar', 'admin', 'self', 'teacher', 'student', 'guest'],
-  Announcements: ['ann_id', 'title', 'body', 'audience', 'publish_date', 'expire_date', 'active'],
-  Audit_Log: ['timestamp', 'role', 'actor_id', 'action', 'target', 'result', 'detail'],
-  Archive_Grades: ['grade_key', 'student_id', 'subject_id', 'year', 'm1', 'm2', 'avg_t1', 'mid_year', 'm3', 'm4', 'avg_t2', 'annual_effort', 'final_exam', 'final', 'round', 'entered_by', 'updated_at', 'archived_at', 'stage_at_time', 'class_at_time']
-};
+// ===== admin.gs : تهيئة الأوراق الـ 16 والعمليات الإدارية =====
+function schemaHeaders_() {
+  return {
+    Config: ['key', 'value'],
+    Admin: ['admin_id', 'full_name', 'certificate', 'specialty', 'start_date', 'phone', 'whatsapp', 'username', 'salt', 'pass_hash', 'sec_question', 'sec_answer_hash', 'updated_at'],
+    Stages: ['stage_id', 'name_ar', 'level_type', 'sort_order', 'track'],
+    Classes: ['class_id', 'stage_id', 'section', 'label', 'capacity', 'status'],
+    Subjects: ['subject_id', 'name_ar', 'stage_id', 'weekly_periods', 'active'],
+    IDs: ['id', 'kind', 'class_id', 'status', 'pin_hash', 'generated_at', 'registered_at', 'last_login', 'card_printed'],
+    Students: ['student_id', 'full_name', 'mother_name', 'gender', 'birth_date', 'address', 'guardian_name', 'guardian_phone', 'photo_file_id', 'prev_school', 'prev_stage', 'prev_average', 'reg_reason', 'failed_years', 'dropout_years', 'enroll_date', 'health_note', 'class_id', 'enroll_status', 'status_note', 'notes', 'updated_at'],
+    Teachers: ['teacher_id', 'full_name', 'mother_name', 'gender', 'birth_date', 'degree', 'specialty', 'university', 'college', 'grad_year', 'job_title', 'hire_date', 'start_date', 'bio_cv', 'subjects', 'phone', 'whatsapp', 'email', 'address', 'photo_file_id', 'status', 'updated_at'],
+    Assignments: ['assign_id', 'teacher_id', 'subject_id', 'class_id', 'year'],
+    Grades: ['grade_key', 'student_id', 'subject_id', 'year', 'm1', 'm2', 'avg_t1', 'mid_year', 'm3', 'm4', 'avg_t2', 'annual_effort', 'final_exam', 'final', 'round', 'entered_by', 'updated_at'],
+    Permissions: ['id', 'entity', 'field', 'label_ar', 'admin', 'self', 'teacher', 'student', 'guest'],
+    Announcements: ['ann_id', 'title', 'body', 'audience', 'publish_date', 'expire_date', 'active'],
+    Audit_Log: ['timestamp', 'role', 'actor_id', 'action', 'target', 'result', 'detail'],
+    Archive_Grades: ['grade_key', 'student_id', 'subject_id', 'year', 'm1', 'm2', 'avg_t1', 'mid_year', 'm3', 'm4', 'avg_t2', 'annual_effort', 'final_exam', 'final', 'round', 'entered_by', 'updated_at', 'archived_at', 'stage_at_time', 'class_at_time'],
+    Attendance: ['att_id', 'teacher_id', 'teacher_name', 'att_date', 'check_in_time', 'check_out_time', 'method', 'status', 'late_minutes', 'device_note', 'created_at', 'updated_at'],
+    Complaints: ['complaint_id', 'student_id', 'student_name', 'class_label', 'category', 'title', 'details', 'status', 'admin_reply', 'created_at', 'updated_at']
+  };
+}
 
 function ensureSchemaIfNeeded_() {
-  if (!SS.getSheetByName('Config') || !SS.getSheetByName('Admin') || !SS.getSheetByName('Permissions')) {
-    initSchema_();
+  const ss = ss_();
+  if (
+    !ss.getSheetByName('Config') ||
+    !ss.getSheetByName('Admin') ||
+    !ss.getSheetByName('Permissions') ||
+    !ss.getSheetByName('Attendance') ||
+    !ss.getSheetByName('Complaints')
+  ) {
+    withLock_(function() { initSchema_(); });
   }
 }
 
 function initSchema_() {
-  Object.keys(SCHEMA_HEADERS).forEach(name => {
-    let sh = SS.getSheetByName(name);
-    if (!sh) sh = SS.insertSheet(name);
+  const ss = ss_();
+  const headers = schemaHeaders_();
+  Object.keys(headers).forEach(function(name) {
+    let sh = ss.getSheetByName(name);
+    if (!sh) sh = ss.insertSheet(name);
     if (sh.getLastRow() === 0) {
-      const cols = SCHEMA_HEADERS[name];
+      const cols = headers[name];
       sh.getRange(1, 1, 1, cols.length).setValues([cols]);
-      if (['IDs', 'Students', 'Teachers', 'Admin'].indexOf(name) >= 0) {
+      if (['IDs', 'Students', 'Teachers', 'Admin', 'Attendance', 'Complaints'].indexOf(name) >= 0) {
         sh.getRange(1, 1, sh.getMaxRows(), cols.length).setNumberFormat('@');
       }
     }
   });
 
-  if (readAll_('Config').length === 0) {
-    const defaults = [
-      ['school_name', 'مدرسة النخبة النموذجية'],
-      ['founded_date', '2018-09-01'],
-      ['school_type', 'middle'],
-      ['shift_type', 'morning'],
-      ['map_url', ''],
-      ['about', 'منصة مدرسية متكاملة لمتابعة شؤون الطلبة، الدرجات، والهيئة التدريسية.'],
-      ['logo_file_id', ''],
-      ['academic_year', '2026-2027'],
-      ['teacher_profile_visibility', 'all'],
-      ['student_profile_visibility', 'all'],
-      ['guest_student_list', 'full'],
-      ['require_teacher_pin', 'FALSE'],
-      ['allow_student_self_edit', 'FALSE'],
-      ['pass_mark', '50'],
-      ['annual_effort_formula', 'iraqi_avg'],
-      ['final_score_formula', 'avg_effort_final'],
-      ['schema_version', '1']
-    ];
+  const defaults = [
+    ['school_name', 'مدرسة النخبة النموذجية'],
+    ['founded_date', '2018-09-01'],
+    ['school_type', 'middle'],
+    ['shift_type', 'morning'],
+    ['map_url', ''],
+    ['about', 'منصة مدرسية متكاملة لمتابعة شؤون الطلبة، الدرجات، والهيئة التدريسية.'],
+    ['logo_file_id', ''],
+    ['academic_year', '2026-2027'],
+    ['teacher_profile_visibility', 'all'],
+    ['student_profile_visibility', 'all'],
+    ['guest_student_list', 'full'],
+    ['require_teacher_pin', 'FALSE'],
+    ['allow_student_self_edit', 'FALSE'],
+    ['pass_mark', '50'],
+    ['annual_effort_formula', 'iraqi_avg'],
+    ['final_score_formula', 'avg_effort_final'],
+    ['education_access_code', ''],
+    ['attendance_start_time', '08:00'],
+    ['attendance_end_time', '13:30'],
+    ['attendance_grace_minutes', '15'],
+    ['attendance_workdays', '0,1,2,3,4'],
+    ['schema_version', '2']
+  ];
+  const existingCfg = readAll_('Config');
+  if (existingCfg.length === 0) {
     sheet_('Config').getRange(2, 1, defaults.length, 2).setValues(defaults);
+  } else {
+    const existingKeys = new Set(existingCfg.map(r => String(r.key)));
+    defaults.forEach(pair => {
+      if (!existingKeys.has(pair[0])) {
+        appendObj_('Config', { key: pair[0], value: pair[1] }, false);
+      }
+    });
   }
 
   if (readAll_('Permissions').length === 0) {
@@ -93,7 +119,7 @@ function initSchema_() {
     sheet_('Permissions').getRange(2, 1, perms.length, 9).setValues(perms);
   }
   clearCache_(['cfg', 'perm']);
-  return { initialized: true, sheets: 14 };
+  return { initialized: true, sheets: 16 };
 }
 
 function adminDashboard_() {
@@ -162,15 +188,45 @@ function adminProfileSave_(req, ctx) {
 
 function adminSchoolSave_(req, ctx) {
   const cfg = config_();
+  const attStart = req.attendance_start_time !== undefined
+    ? String(req.attendance_start_time).trim()
+    : (cfg.attendance_start_time || '08:00');
+  const attEnd = req.attendance_end_time !== undefined
+    ? String(req.attendance_end_time).trim()
+    : (cfg.attendance_end_time || '13:30');
+  parseTimeMinutes_(attStart);
+  parseTimeMinutes_(attEnd);
+
+  const graceRaw = req.attendance_grace_minutes !== undefined
+    ? Number(req.attendance_grace_minutes)
+    : Number(cfg.attendance_grace_minutes || 15);
+  const graceMinutes = String(Math.max(0, Math.min(180, isFinite(graceRaw) ? Math.round(graceRaw) : 15)));
+
   let logoId = cfg.logo_file_id || '';
-  if (req.logo_data_url) logoId = saveDrivePhoto_(req.logo_data_url, 'school_logo_');
+  if (req.logo_data_url && String(req.logo_data_url).indexOf('data:image/') === 0) {
+    logoId = saveDrivePhoto_(req.logo_data_url, 'school_logo_');
+  } else if (req.logo_data_url === '') {
+    logoId = '';
+  }
+
   const keys = [
     'school_name','founded_date','school_type','shift_type','map_url','about','academic_year',
     'teacher_profile_visibility','student_profile_visibility','guest_student_list',
-    'require_teacher_pin','allow_student_self_edit','pass_mark','annual_effort_formula','final_score_formula'
+    'require_teacher_pin','allow_student_self_edit','pass_mark','annual_effort_formula','final_score_formula',
+    'education_access_code','attendance_workdays'
   ];
-  keys.forEach(k => {
-    const val = req[k] !== undefined ? String(req[k]) : String(cfg[k] || '');
+  const overrides = {
+    attendance_start_time: attStart,
+    attendance_end_time: attEnd,
+    attendance_grace_minutes: graceMinutes,
+    education_access_code: req.education_access_code !== undefined ? String(req.education_access_code).trim() : String(cfg.education_access_code || ''),
+    attendance_workdays: req.attendance_workdays !== undefined ? String(req.attendance_workdays).trim() : String(cfg.attendance_workdays || '0,1,2,3,4')
+  };
+
+  keys.concat(['attendance_start_time','attendance_end_time','attendance_grace_minutes']).forEach(k => {
+    const val = overrides[k] !== undefined
+      ? overrides[k]
+      : (req[k] !== undefined ? String(req[k]) : String(cfg[k] || ''));
     const row = findRow_('Config', 'key', k);
     if (row) sheet_('Config').getRange(row, 2).setValue(val);
     else appendObj_('Config', { key: k, value: val }, false);
@@ -526,7 +582,7 @@ function auditList_() {
 
 function sheetsInspect_(req) {
   const name = String(req.sheet || 'Config');
-  if (!SCHEMA_HEADERS[name]) throw new Error('NOT_FOUND');
+  if (!schemaHeaders_()[name]) throw new Error('NOT_FOUND');
   const rows = readAll_(name);
   if (name === 'Admin') {
     return rows.map(r => { const c = Object.assign({}, r); delete c.salt; delete c.pass_hash; delete c.sec_answer_hash; return c; });
