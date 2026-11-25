@@ -408,10 +408,13 @@ export function handleBaseAction(action: string, req: Record<string, unknown>, t
     'backup.exportJson': ['admin'],
     'backup.restore': ['admin'],
     'demo.populate': ['admin'],
-    // New features: Attendance, Complaints, Education Directorate Supervision
+    // New features: Attendance, Absence/Leave & Lock, Complaints, Education Directorate Supervision
     'attendance.punch': ['teacher'],
     'attendance.mine': ['teacher'],
     'attendance.list': ['admin', 'education'],
+    'attendance.markAbsence': ['admin'],
+    'attendance.clearDay': ['admin'],
+    'attendance.setLock': ['admin'],
     'complaints.create': ['student'],
     'complaints.mine': ['student'],
     'complaints.list': ['admin', 'education'],
@@ -562,6 +565,12 @@ export function handleBaseAction(action: string, req: Record<string, unknown>, t
       return actionAttendanceMine(ctx);
     case 'attendance.list':
       return actionAttendanceList(req);
+    case 'attendance.markAbsence':
+      return actionAttendanceMarkAbsence(req, ctx.id || 'admin');
+    case 'attendance.clearDay':
+      return actionAttendanceClearDay(req, ctx.id || 'admin');
+    case 'attendance.setLock':
+      return actionAttendanceSetLock(req, ctx.id || 'admin');
     case 'complaints.create':
       return actionComplaintsCreate(req, ctx);
     case 'complaints.mine':
@@ -2347,6 +2356,22 @@ function actionDemoPopulate(actorId: string) {
 // ATTENDANCE (FINGERPRINT), COMPLAINTS, & EDUCATION SUPERVISION PORTAL
 // =========================================================================
 
+function parseAttendanceLocksMap(cfg: Record<string, string>): Record<string, { locked: boolean; reason: string; updated_at: string }> {
+  try {
+    const raw = cfg.attendance_locks ? JSON.parse(cfg.attendance_locks) : {};
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      return raw as Record<string, { locked: boolean; reason: string; updated_at: string }>;
+    }
+  } catch {
+    // ignore invalid JSON
+  }
+  return {};
+}
+
+function saveAttendanceLocksMap(locks: Record<string, { locked: boolean; reason: string; updated_at: string }>): void {
+  db.prepare('INSERT OR REPLACE INTO Config (key, value) VALUES (?, ?)').run('attendance_locks', JSON.stringify(locks));
+}
+
 function actionAttendancePunch(req: Record<string, unknown>, ctx: { role: Role; id: string | null }) {
   if (!ctx.id) throw new ApiError('FORBIDDEN');
   const teacher = db.prepare('SELECT teacher_id, full_name FROM Teachers WHERE teacher_id = ?').get(ctx.id) as
@@ -2354,11 +2379,16 @@ function actionAttendancePunch(req: Record<string, unknown>, ctx: { role: Role; 
     | undefined;
   if (!teacher) throw new ApiError('NOT_FOUND');
 
+  const cfg = getConfigMap();
+  const locks = parseAttendanceLocksMap(cfg);
+  if (locks[teacher.teacher_id]?.locked) {
+    throw new ApiError('ATTENDANCE_LOCKED', { reason: locks[teacher.teacher_id].reason || '' });
+  }
+
   const punchType = req.type === 'out' ? 'out' : 'in';
   const method = req.method === 'webauthn' ? 'webauthn' : 'fingerprint_digital';
   const deviceNote = String(req.device_note || '').slice(0, 140);
 
-  const cfg = getConfigMap();
   const schedule = getScheduleFromConfig(cfg);
   const startMinutes = parseTimeMinutes(schedule.attendance_start_time);
   const deadlineMinutes = startMinutes + schedule.attendance_grace_minutes;
@@ -2368,6 +2398,10 @@ function actionAttendancePunch(req: Record<string, unknown>, ctx: { role: Role; 
   const existing = db
     .prepare('SELECT * FROM Attendance WHERE teacher_id = ? AND att_date = ?')
     .get(ctx.id, today) as unknown as AttendanceRow | undefined;
+
+  if (existing && (existing.status === 'absent' || existing.status === 'excused_leave')) {
+    throw new ApiError('ATTENDANCE_DAY_CLOSED', { status: existing.status, reason: existing.device_note });
+  }
 
   if (punchType === 'in') {
     if (existing) throw new ApiError('ALREADY_CHECKED_IN');
@@ -2397,6 +2431,8 @@ function actionAttendanceMine(ctx: { role: Role; id: string | null }): TeacherAt
   if (!ctx.id) throw new ApiError('FORBIDDEN');
   const cfg = getConfigMap();
   const schedule = getScheduleFromConfig(cfg);
+  const locks = parseAttendanceLocksMap(cfg);
+  const lockInfo = locks[ctx.id];
   const { date: today } = baghdadNow();
 
   const records = db
@@ -2406,16 +2442,22 @@ function actionAttendanceMine(ctx: { role: Role; id: string | null }): TeacherAt
   const todayRecord = records.find((r) => r.att_date === today) || null;
   const onTimeDays = records.filter((r) => r.status === 'on_time').length;
   const lateDays = records.filter((r) => r.status === 'late').length;
+  const absentDays = records.filter((r) => r.status === 'absent').length;
+  const leaveDays = records.filter((r) => r.status === 'excused_leave').length;
   const totalLateMinutes = records.reduce((acc, r) => acc + Number(r.late_minutes || 0), 0);
 
   return {
     todayDate: today,
     todayRecord,
     schedule,
+    locked: Boolean(lockInfo?.locked),
+    lockReason: lockInfo?.reason || '',
     summary: {
       totalDays: records.length,
       onTimeDays,
       lateDays,
+      absentDays,
+      leaveDays,
       totalLateMinutes,
     },
     records,
@@ -2425,7 +2467,12 @@ function actionAttendanceMine(ctx: { role: Role; id: string | null }): TeacherAt
 function actionAttendanceList(req: Record<string, unknown>) {
   const cfg = getConfigMap();
   const schedule = getScheduleFromConfig(cfg);
+  const locks = parseAttendanceLocksMap(cfg);
   const { date: today } = baghdadNow();
+  const teachers = db
+    .prepare('SELECT teacher_id, full_name, job_title, specialty, status FROM Teachers ORDER BY full_name ASC')
+    .all() as Array<{ teacher_id: string; full_name: string; job_title: string; specialty: string; status: string }>;
+
   let rows = db
     .prepare('SELECT * FROM Attendance ORDER BY att_date DESC, check_in_time DESC LIMIT 500')
     .all() as unknown as AttendanceRow[];
@@ -2444,8 +2491,85 @@ function actionAttendanceList(req: Record<string, unknown>) {
   return {
     todayDate: today,
     schedule,
+    locks,
+    teachers,
     records: rows,
   };
+}
+
+function actionAttendanceMarkAbsence(req: Record<string, unknown>, actorId: string) {
+  const teacherId = normalizeIdDigits(String(req.teacher_id || ''));
+  if (!teacherId) throw new ApiError('MISSING_FIELD', { field: 'teacher_id' });
+  const teacher = db.prepare('SELECT teacher_id, full_name FROM Teachers WHERE teacher_id = ?').get(teacherId) as
+    | { teacher_id: string; full_name: string }
+    | undefined;
+  if (!teacher) throw new ApiError('NOT_FOUND');
+
+  const status = req.status === 'excused_leave' ? 'excused_leave' : 'absent';
+  const { date: today } = baghdadNow();
+  const attDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.att_date || '').trim())
+    ? String(req.att_date).trim()
+    : today;
+  const note = String(req.note || '').trim().slice(0, 140);
+  const now = nowIso();
+
+  const existing = db
+    .prepare('SELECT * FROM Attendance WHERE teacher_id = ? AND att_date = ?')
+    .get(teacher.teacher_id, attDate) as unknown as AttendanceRow | undefined;
+
+  if (existing) {
+    db.prepare(
+      `UPDATE Attendance SET check_in_time = '', check_out_time = '', method = 'admin_lock', status = ?, late_minutes = 0, device_note = ?, updated_at = ? WHERE att_id = ?`
+    ).run(status, note, now, existing.att_id);
+    audit('admin', actorId, 'attendance.markAbsence', `${teacher.teacher_id}:${attDate}:${status}`, 'ok');
+    return db.prepare('SELECT * FROM Attendance WHERE att_id = ?').get(existing.att_id);
+  }
+
+  const attId = `Att-${attDate.replace(/-/g, '')}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+  db.prepare(
+    `INSERT INTO Attendance (att_id, teacher_id, teacher_name, att_date, check_in_time, check_out_time, method, status, late_minutes, device_note, created_at, updated_at)
+     VALUES (?, ?, ?, ?, '', '', 'admin_lock', ?, 0, ?, ?, ?)`
+  ).run(attId, teacher.teacher_id, teacher.full_name, attDate, status, note, now, now);
+
+  audit('admin', actorId, 'attendance.markAbsence', `${teacher.teacher_id}:${attDate}:${status}`, 'ok');
+  return db.prepare('SELECT * FROM Attendance WHERE att_id = ?').get(attId);
+}
+
+function actionAttendanceClearDay(req: Record<string, unknown>, actorId: string) {
+  const attId = String(req.att_id || '').trim();
+  if (attId) {
+    db.prepare('DELETE FROM Attendance WHERE att_id = ?').run(attId);
+    audit('admin', actorId, 'attendance.clearDay', attId, 'ok');
+    return true;
+  }
+  const teacherId = normalizeIdDigits(String(req.teacher_id || ''));
+  const attDate = String(req.att_date || '').trim();
+  if (!teacherId || !attDate) throw new ApiError('MISSING_FIELD');
+  db.prepare('DELETE FROM Attendance WHERE teacher_id = ? AND att_date = ?').run(teacherId, attDate);
+  audit('admin', actorId, 'attendance.clearDay', `${teacherId}:${attDate}`, 'ok');
+  return true;
+}
+
+function actionAttendanceSetLock(req: Record<string, unknown>, actorId: string) {
+  const teacherId = normalizeIdDigits(String(req.teacher_id || ''));
+  if (!teacherId) throw new ApiError('MISSING_FIELD', { field: 'teacher_id' });
+  const teacher = db.prepare('SELECT teacher_id FROM Teachers WHERE teacher_id = ?').get(teacherId);
+  if (!teacher) throw new ApiError('NOT_FOUND');
+
+  const cfg = getConfigMap();
+  const locks = parseAttendanceLocksMap(cfg);
+  const locked = Boolean(req.locked);
+  const reason = String(req.reason || '').trim().slice(0, 140);
+  const now = nowIso();
+
+  if (locked) {
+    locks[teacherId] = { locked: true, reason, updated_at: now };
+  } else {
+    delete locks[teacherId];
+  }
+  saveAttendanceLocksMap(locks);
+  audit('admin', actorId, 'attendance.setLock', `${teacherId}:${locked ? 'locked' : 'unlocked'}`, 'ok');
+  return locks;
 }
 
 function actionComplaintsCreate(req: Record<string, unknown>, ctx: { role: Role; id: string | null }) {
@@ -2648,19 +2772,26 @@ function actionEducationDashboard(): EducationDashboardData {
   });
 
   // Attendance analytics
+  const locks = parseAttendanceLocksMap(cfg);
   const { date: today } = baghdadNow();
   const todayRows = attendanceRows.filter((r) => r.att_date === today);
   const todayOnTime = todayRows.filter((r) => r.status === 'on_time').length;
   const todayLate = todayRows.filter((r) => r.status === 'late').length;
-  const todayPresent = todayRows.length;
-  const todayAbsent = Math.max(0, teachers.length - todayPresent);
+  const todayLeave = todayRows.filter((r) => r.status === 'excused_leave').length;
+  const todayMarkedAbsent = todayRows.filter((r) => r.status === 'absent').length;
+  const todayPresent = todayOnTime + todayLate;
+  const todayAbsent = Math.max(todayMarkedAbsent, teachers.length - todayPresent - todayLeave);
 
   const onTimeRecords = attendanceRows.filter((r) => r.status === 'on_time').length;
   const lateRecords = attendanceRows.filter((r) => r.status === 'late').length;
+  const absentRecords = attendanceRows.filter((r) => r.status === 'absent').length;
+  const leaveRecords = attendanceRows.filter((r) => r.status === 'excused_leave').length;
+  const lockedTeachers = teachers.filter((t) => Boolean(locks[t.teacher_id]?.locked)).length;
   const totalLateMinutes = attendanceRows.reduce((acc, r) => acc + Number(r.late_minutes || 0), 0);
 
   const dateMap = new Map<string, { on_time: number; late: number }>();
   for (const r of attendanceRows) {
+    if (r.status !== 'on_time' && r.status !== 'late') continue;
     const entry = dateMap.get(r.att_date) || { on_time: 0, late: 0 };
     if (r.status === 'late') entry.late++;
     else entry.on_time++;
@@ -2674,6 +2805,7 @@ function actionEducationDashboard(): EducationDashboardData {
   const byTeacher = teachers.map((t) => {
     const recs = attendanceRows.filter((r) => r.teacher_id === t.teacher_id);
     const todayRec = recs.find((r) => r.att_date === today);
+    const lockInfo = locks[t.teacher_id];
     return {
       teacher_id: t.teacher_id,
       teacher_name: t.full_name,
@@ -2681,7 +2813,11 @@ function actionEducationDashboard(): EducationDashboardData {
       total_days: recs.length,
       on_time_days: recs.filter((r) => r.status === 'on_time').length,
       late_days: recs.filter((r) => r.status === 'late').length,
+      absent_days: recs.filter((r) => r.status === 'absent').length,
+      leave_days: recs.filter((r) => r.status === 'excused_leave').length,
       total_late_minutes: recs.reduce((acc, r) => acc + Number(r.late_minutes || 0), 0),
+      locked: Boolean(lockInfo?.locked),
+      lock_reason: lockInfo?.reason || '',
       today_status: todayRec ? todayRec.status : ('absent' as const),
       today_check_in: todayRec?.check_in_time || '',
       today_check_out: todayRec?.check_out_time || '',
@@ -2752,9 +2888,13 @@ function actionEducationDashboard(): EducationDashboardData {
       todayOnTime,
       todayLate,
       todayAbsent,
+      todayLeave,
       totalRecords: attendanceRows.length,
       onTimeRecords,
       lateRecords,
+      absentRecords,
+      leaveRecords,
+      lockedTeachers,
       totalLateMinutes,
       dailyTrend,
       byTeacher,
