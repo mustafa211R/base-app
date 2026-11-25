@@ -272,10 +272,23 @@ function saveDrivePhoto_(dataUrl, prefix) {
   return file.getId();
 }
 
+// يقبل: معرّف ملف Drive، أو رابط Drive كامل (…/file/d/ID/… أو …?id=ID)، أو رابط صورة خارجي https://...
 function readDrivePhotoDataUrl_(fileId) {
-  if (!fileId) return '';
-  return cached_('ph:' + fileId, 21600, () => {
-    const blob = DriveApp.getFileById(String(fileId)).getBlob();
+  const ref = String(fileId || '').trim();
+  if (!ref) return '';
+  const key = 'ph:' + (ref.length > 200 ? Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, ref)) : ref);
+  return cached_(key, 21600, () => {
+    let blob;
+    const driveLink = ref.match(/drive\.google\.com\/.*?(?:\/d\/|[?&]id=)([-\w]{20,})/i);
+    if (driveLink) {
+      blob = DriveApp.getFileById(driveLink[1]).getBlob();
+    } else if (/^https?:\/\//i.test(ref)) {
+      const res = UrlFetchApp.fetch(ref, { muteHttpExceptions: true, followRedirects: true });
+      if (res.getResponseCode() !== 200) throw new Error('PHOTO_FETCH_FAILED');
+      blob = res.getBlob();
+    } else {
+      blob = DriveApp.getFileById(ref).getBlob();
+    }
     return 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
   });
 }
