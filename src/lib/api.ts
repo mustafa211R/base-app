@@ -98,6 +98,8 @@ export const ERROR_MESSAGES_AR: Record<string, string> = {
   ALREADY_CHECKED_IN: 'تم تسجيل بصمة الحضور لهذا اليوم مسبقاً',
   NOT_CHECKED_IN: 'يرجى تسجيل بصمة الحضور أولاً قبل تسجيل الانصراف',
   ALREADY_CHECKED_OUT: 'تم تسجيل بصمة الانصراف لهذا اليوم مسبقاً',
+  ATTENDANCE_LOCKED: 'تم إغلاق البصمة الحضورية لحسابك من قِبل مدير المدرسة — يرجى مراجعة الإدارة',
+  ATTENDANCE_DAY_CLOSED: 'تم تسجيل هذا اليوم كغياب أو إجازة من قِبل الإدارة ولا يمكن البصم فيه',
   EDUCATION_DISABLED: 'لم يتم تفعيل كود قسم التربية من قبل مدير المدرسة بعد',
   INVALID_TIME_FORMAT: 'صيغة الوقت غير صالحة (المطلوب HH:MM)',
   INVALID_STATUS: 'الحالة المختارة غير صالحة',
@@ -115,6 +117,13 @@ export const COMPLAINT_STATUS_LABELS: Record<string, string> = {
   open: 'مفتوحة',
   in_review: 'قيد المتابعة',
   resolved: 'تمت المعالجة',
+};
+
+export const ATTENDANCE_STATUS_LABELS: Record<string, string> = {
+  on_time: 'بالوقت',
+  late: 'متأخر',
+  absent: 'غائب',
+  excused_leave: 'إجازة',
 };
 
 export function formatErrorAr(err: unknown): string {
@@ -326,6 +335,43 @@ export function formatShifts(shiftStr: string): string {
     .map((s) => SHIFT_LABELS[s.trim()] || s.trim())
     .filter(Boolean)
     .join(' · ');
+}
+
+export function normalizeTimeHHMM(val?: string | null): string {
+  if (!val) return '';
+  const cleaned = String(val)
+    .replace(/[\u200e\u200f\u202a-\u202e\u061c]/g, '')
+    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .trim();
+  const ampm = /(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM|ص|م)/i.exec(cleaned);
+  if (ampm) {
+    let h = Number(ampm[1]);
+    const m = ampm[2];
+    const suf = ampm[3].toUpperCase();
+    if ((suf === 'PM' || suf === 'م') && h < 12) h += 12;
+    if ((suf === 'AM' || suf === 'ص') && h === 12) h = 0;
+    return `${String(h).padStart(2, '0')}:${m}`;
+  }
+  const hm = /(\d{1,2}):(\d{2})(?::\d{2})?/.exec(cleaned);
+  if (hm) {
+    const h = Number(hm[1]);
+    const min = Number(hm[2]);
+    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) {
+      return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+    }
+  }
+  return '';
+}
+
+export function formatTimeAr12(val?: string | null): string {
+  const hhmm = normalizeTimeHHMM(val);
+  if (!hhmm) return val ? String(val) : '—';
+  const [hStr, mStr] = hhmm.split(':');
+  const h = Number(hStr);
+  const period = h >= 12 ? 'م' : 'ص';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${String(h12).padStart(2, '0')}:${mStr} ${period}`;
 }
 
 export type { AuthSession, PublicSchoolData };
