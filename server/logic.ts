@@ -2415,7 +2415,9 @@ function actionAttendancePunch(req: Record<string, unknown>, ctx: { role: Role; 
 
   if (punchType === 'in') {
     if (existing) throw new ApiError('ALREADY_CHECKED_IN');
-    const isLate = nowMinutes > deadlineMinutes;
+    if (nowMinutes < startMinutes - 60) throw new ApiError('BEFORE_WORK_HOURS');
+    if (nowMinutes > deadlineMinutes) throw new ApiError('CHECKIN_CLOSED');
+    const isLate = nowMinutes > startMinutes && nowMinutes <= deadlineMinutes;
     const status = isLate ? 'late' : 'on_time';
     const lateMinutes = isLate ? Math.max(1, nowMinutes - startMinutes) : 0;
     const attId = `Att-${today.replace(/-/g, '')}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
