@@ -8,6 +8,7 @@ import { EducationPortal } from './components/EducationPortal.tsx';
 import { ConnectionScreen } from './components/ConnectionScreen.tsx';
 import { NetworkBanner } from './components/NetworkBanner.tsx';
 import { NetworkErrorScreen } from './components/NetworkErrorScreen.tsx';
+import { loadGuest, loadSession, persistAuthState } from './lib/persist.ts';
 
 export default function App() {
   return (
@@ -20,8 +21,12 @@ export default function App() {
 
 function AppContent() {
   const [publicData, setPublicData] = useState<PublicSchoolData | null>(null);
-  const [session, setSession] = useState<AuthSession | null>(null);
-  const [guestMode, setGuestMode] = useState(false);
+  const [session, setSession] = useState<AuthSession | null>(() => {
+    const saved = loadSession();
+    if (saved) setAuthToken(saved.token); // استعادة الجلسة بعد تحديث الصفحة
+    return saved;
+  });
+  const [guestMode, setGuestMode] = useState(() => loadGuest());
   const [loadError, setLoadError] = useState<unknown>(null);
   const [showSetup, setShowSetup] = useState(false);
   const hasDataRef = useRef(false);
@@ -46,6 +51,10 @@ function AppContent() {
       setLoadError(err);
     }
   }
+
+  useEffect(() => {
+    persistAuthState(session, guestMode);
+  }, [session, guestMode]);
 
   useEffect(() => {
     setOnSessionExpired(() => {
