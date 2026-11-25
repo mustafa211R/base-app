@@ -9,7 +9,7 @@ function headers_(name) {
 
 function colIndex_(name, col) { return headers_(name).indexOf(col) + 1; }
 
-function todayDate_() { return new Date().toISOString().slice(0, 10); }
+function todayDate_() { return Utilities.formatDate(new Date(), 'Asia/Baghdad', 'yyyy-MM-dd'); }
 
 function baghdadNow_() {
   const now = new Date();
@@ -51,35 +51,70 @@ function asTimeStr_(v) {
   return normalizeDigits_(v).trim();
 }
 
+function pad2_(n) { return ('0' + n).slice(-2); }
+
+// تُرجع دائماً "HH:mm" أو '' إن تعذّر الفهم (لا تُرجع نصاً خاماً أبداً)
 function asHHMMStr_(v) {
   if (v === undefined || v === null || v === '') return '';
-  if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
-    return Utilities.formatDate(v, sheetTz_(), 'HH:mm');
+
+  // 1) كائن Date (خلية وقت في Google Sheets تأتي كتاريخ 1899-12-30)
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    if (isNaN(v.getTime())) return '';
+    const hms = Utilities.formatDate(v, sheetTz_(), 'HH:mm:ss').split(':');
+    let h = Number(hms[0]), m = Number(hms[1]);
+    if (Number(hms[2]) >= 30) { m += 1; if (m === 60) { m = 0; h = (h + 1) % 24; } } // تقريب فرق LMT (ثوانٍ)
+    return pad2_(h) + ':' + pad2_(m);
   }
-  const s = normalizeDigits_(v).trim();
-  const ampm = /^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM|ص|م)$/i.exec(s);
-  if (ampm) {
-    let h = Number(ampm[1]);
-    const m = ampm[2];
-    const suf = ampm[3].toUpperCase();
-    if ((suf === 'PM' || suf === 'م') && h < 12) h += 12;
-    if ((suf === 'AM' || suf === 'ص') && h === 12) h = 0;
-    return ('0' + h).slice(-2) + ':' + m;
+
+  // 2) رقم: كسر من اليوم (0.5625 = 13:30)
+  if (typeof v === 'number') {
+    if (v >= 0 && v < 1) {
+      const total = Math.round(v * 1440) % 1440;
+      return pad2_(Math.floor(total / 60)) + ':' + pad2_(total % 60);
+    }
+    return '';
   }
-  const ampmPrefix = /^(AM|PM|ص|م)\s*(\d{1,2}):(\d{2})(?::\d{2})?$/i.exec(s);
-  if (ampmPrefix) {
-    let h = Number(ampmPrefix[2]);
-    const m = ampmPrefix[3];
-    const suf = ampmPrefix[1].toUpperCase();
-    if ((suf === 'PM' || suf === 'م') && h < 12) h += 12;
-    if ((suf === 'AM' || suf === 'ص') && h === 12) h = 0;
-    return ('0' + h).slice(-2) + ':' + m;
+
+  const s = normalizeDigits_(v).replace(/[\u00a0\u202f]/g, ' ').trim();
+
+  // 3) نص طويل ناتج عن String(Date): "Sat Dec 30 1899 13:30:00 GMT+0257 (...)"
+  const jsDate = /(\d{1,2}):(\d{2}):\d{2}\s*GMT/.exec(s);
+  if (jsDate) return pad2_(Number(jsDate[1])) + ':' + jsDate[2];
+
+  // 4) ISO: 1899-12-30T10:27:20.000Z أو 2026-01-01T08:00:00
+  const iso = /^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})/.exec(s);
+  if (iso) {
+    if (/^1899|^1900/.test(s)) {
+      // وقت فقط مخزّن كـ UTC مع فرق LMT لبغداد (+02:57:40) — نعيده إلى توقيت بغداد
+      const d = new Date(s);
+      if (!isNaN(d.getTime())) return asHHMMStr_(d);
+    }
+    return iso[1] + ':' + iso[2];
   }
+
+  // 5) 12 ساعة مع AM/PM أو ص/م (قبل أو بعد الوقت)
+  let m12 = /^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM|ص|م)$/i.exec(s);
+  let suf, hh, mm;
+  if (m12) { hh = Number(m12[1]); mm = m12[2]; suf = m12[3]; }
+  else {
+    m12 = /^(AM|PM|ص|م)\s*(\d{1,2}):(\d{2})(?::\d{2})?$/i.exec(s);
+    if (m12) { suf = m12[1]; hh = Number(m12[2]); mm = m12[3]; }
+  }
+  if (m12) {
+    suf = suf.toUpperCase();
+    if ((suf === 'PM' || suf === 'م') && hh < 12) hh += 12;
+    if ((suf === 'AM' || suf === 'ص') && hh === 12) hh = 0;
+    return pad2_(hh) + ':' + mm;
+  }
+
+  // 6) 24 ساعة عادية
   const hm = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(s);
-  if (hm) return ('0' + Number(hm[1])).slice(-2) + ':' + hm[2];
-  const jsDate = /\b(\d{2}):(\d{2}):\d{2}\s+GMT/.exec(s);
-  if (jsDate) return jsDate[1] + ':' + jsDate[2];
-  return s;
+  if (hm) {
+    const h = Number(hm[1]);
+    if (h > 23 || Number(hm[2]) > 59) return '';
+    return pad2_(h) + ':' + hm[2];
+  }
+  return '';
 }
 
 function parseTimeMinutes_(hhmm) {
@@ -162,13 +197,14 @@ function clearCache_(keys) {
       expanded.push('cfg_v2');
       expanded.push('cfg_v3');
       expanded.push('cfg_v4');
+      expanded.push('cfg_v5');
     }
   });
   CacheService.getScriptCache().removeAll(expanded);
 }
 
 function config_() {
-  return cached_('cfg_v4', 120, () => {
+  return cached_('cfg_v5', 120, () => {
     const o = {};
     const sh = sheet_('Config');
     if (!sh || sh.getLastRow() < 2) return o;
@@ -185,14 +221,12 @@ function config_() {
       const raw = vals[i][vIdx];
       const shown = String(disp[i][vIdx] || '').trim();
       if (k === 'attendance_start_time' || k === 'attendance_end_time') {
-        const strFirst = typeof raw === 'string' ? asHHMMStr_(raw) : '';
-        const dTime = asHHMMStr_(shown);
-        const rTime = asHHMMStr_(raw);
-        o[k] = /^\d{2}:\d{2}$/.test(strFirst)
-          ? strFirst
-          : (/^\d{2}:\d{2}$/.test(dTime)
-            ? dTime
-            : (/^\d{2}:\d{2}$/.test(rTime) ? rTime : (k === 'attendance_start_time' ? '08:00' : '13:30')));
+        const fallback = k === 'attendance_start_time' ? '08:00' : '13:30';
+        // الأولوية: النص الصريح ← القيمة الخام (Date/رقم/نص) ← النص المعروض في الخلية
+        o[k] = asHHMMStr_(typeof raw === 'string' ? raw : '')
+          || asHHMMStr_(raw)
+          || asHHMMStr_(shown)
+          || fallback;
       } else if (Object.prototype.toString.call(raw) === '[object Date]' && !isNaN(raw.getTime())) {
         o[k] = asDateStr_(raw);
       } else if (k === 'education_access_code' || k === 'attendance_workdays' || k === 'attendance_grace_minutes' || k === 'pass_mark') {
@@ -1094,4 +1128,25 @@ function educationDashboard_() {
       items: complaints
     }
   };
+}
+
+
+// شغّلها يدوياً مرة واحدة من محرر Apps Script (Run) لإصلاح خلايا الوقت التالفة في Config
+function repairConfigTimes() {
+  const sh = sheet_('Config');
+  const defs = { attendance_start_time: '08:00', attendance_end_time: '13:30' };
+  const report = [];
+  Object.keys(defs).forEach(k => {
+    const row = findRow_('Config', 'key', k);
+    if (!row) return;
+    const cell = sh.getRange(row, 2);
+    const clean = asHHMMStr_(cell.getValue()) || asHHMMStr_(cell.getDisplayValue()) || defs[k];
+    cell.setNumberFormat('@');
+    cell.setValue(clean);
+    report.push(k + ' = ' + clean);
+  });
+  SpreadsheetApp.flush();
+  clearCache_(['cfg']);
+  Logger.log(report.join('\n'));
+  return report;
 }
