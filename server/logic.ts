@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import { db, initSchema, PHOTOS_DIR } from './db.ts';
 import { luhnCheckDigit, luhnValid, normalizeIdDigits } from '../shared/luhn.ts';
 import { parseHHMM } from '../shared/timeFormat.ts';
+import { isEnrollStatusLoginAllowed, LOGIN_ALLOWED_ENROLL_STATUSES } from '../shared/types.ts';
 import type {
   Role,
   SchoolConfig,
@@ -36,6 +37,40 @@ interface SessionCtx {
 interface LoginAttempt {
   count: number;
   lockedUntil: number;
+}
+
+const ALLOWED_STATUS_SQL = LOGIN_ALLOWED_ENROLL_STATUSES.map((s) => `'${s}'`).join(', ');
+
+// هل للهوية ملف شخصي مسجّل (طالب أو مدرس)؟ هذا هو المرجع لمعرفة أن الهوية "مسجّلة"
+function idHasProfile(id: string, kind: string): boolean {
+  const sql =
+    kind === 'student'
+      ? 'SELECT 1 AS x FROM Students WHERE student_id = ? LIMIT 1'
+      : 'SELECT 1 AS x FROM Teachers WHERE teacher_id = ? LIMIT 1';
+  return !!db.prepare(sql).get(id);
+}
+
+// مزامنة كل الهويات مع حالات القيد عند تشغيل الخادم (يصلح الهويات المعطّلة خطأً لطلاب حالتهم مسموحة)
+export function syncAllStudentIds() {
+  const rows = db.prepare('SELECT student_id FROM Students').all() as Array<{ student_id: string }>;
+  for (const r of rows) syncStudentIdWithEnrollStatus(r.student_id);
+}
+
+// مزامنة الهوية مع حالة القيد: مفصول/منقول/متخرج => الهوية معطّلة، وغير ذلك => تعمل وتبقى مسجّلة
+function syncStudentIdWithEnrollStatus(studentId: string) {
+  const st = db.prepare('SELECT enroll_status, class_id FROM Students WHERE student_id = ?').get(studentId) as
+    | { enroll_status: string; class_id: string }
+    | undefined;
+  if (!st) return;
+  if (isEnrollStatusLoginAllowed(st.enroll_status)) {
+    db.prepare("UPDATE IDs SET status = 'registered', class_id = ? WHERE id = ? AND kind = 'student'").run(st.class_id, studentId);
+  } else {
+    db.prepare("UPDATE IDs SET status = 'disabled' WHERE id = ? AND kind = 'student'").run(studentId);
+    // إنهاء الجلسات المفتوحة لهذا الطالب فوراً
+    for (const [tok, sess] of sessions.entries()) {
+      if (sess.role === 'student' && sess.id === studentId) sessions.delete(tok);
+    }
+  }
 }
 
 const sessions = new Map<string, SessionCtx>();
@@ -689,7 +724,22 @@ function actionAuthLogin(req: Record<string, unknown>) {
       const idRec = db.prepare('SELECT * FROM IDs WHERE id = ?').get(cleanId) as
         | { id: string; kind: string; status: string; pin_hash: string }
         | undefined;
-      if (idRec && idRec.kind === role && idRec.status !== 'disabled') {
+      let enrollOk = true;
+      let hasProfile = false;
+      if (idRec && role === 'student') {
+        const stRec = db.prepare('SELECT enroll_status FROM Students WHERE student_id = ?').get(cleanId) as
+          | { enroll_status: string }
+          | undefined;
+        hasProfile = !!stRec;
+        // الدخول يتبع حالة القيد: رسمي/منتسب/استضافة/محمّل فقط
+        if (stRec) enrollOk = isEnrollStatusLoginAllowed(stRec.enroll_status);
+        // طالب حالته مسموحة لكن هويته معطّلة بسبب حالة سابقة: أعد تفعيلها تلقائياً
+        if (stRec && enrollOk && idRec.status === 'disabled') {
+          db.prepare("UPDATE IDs SET status = 'registered' WHERE id = ?").run(cleanId);
+          idRec.status = 'registered';
+        }
+      }
+      if (idRec && idRec.kind === role && idRec.status !== 'disabled' && enrollOk) {
         const cfg = getConfigMap();
         const pinOk =
           role === 'teacher' && cfg.require_teacher_pin === 'TRUE' && idRec.pin_hash
@@ -697,7 +747,11 @@ function actionAuthLogin(req: Record<string, unknown>) {
             : true;
         if (pinOk) {
           db.prepare('UPDATE IDs SET last_login = ? WHERE id = ?').run(nowIso(), cleanId);
-          authResult = { role: role as Role, id: cleanId, registered: idRec.status === 'registered' };
+          authResult = {
+            role: role as Role,
+            id: cleanId,
+            registered: role === 'student' ? hasProfile || idRec.status === 'registered' : idRec.status === 'registered',
+          };
         }
       }
     }
@@ -1209,14 +1263,41 @@ function actionIdsReplace(req: Record<string, unknown>, actorId: string) {
   const [newId] = generateLuhnIds(1, len, existing);
   const now = nowIso();
 
+  const fullOld = db.prepare('SELECT pin_hash, registered_at FROM IDs WHERE id = ?').get(oldId) as
+    | { pin_hash: string; registered_at: string }
+    | undefined;
+  // "مسجّلة" تُحدَّد بوجود الملف الشخصي وليس بحالة الهوية القديمة (قد تكون معطّلة بسبب الفصل/النقل/التخرج)
+  const hadProfile = idHasProfile(oldId, oldRec.kind);
+  let newStatus: string = hadProfile ? 'registered' : oldRec.status === 'registered' ? 'registered' : 'unused';
+  if (oldRec.kind === 'student' && hadProfile) {
+    const st = db.prepare('SELECT enroll_status FROM Students WHERE student_id = ?').get(oldId) as { enroll_status: string } | undefined;
+    if (st && !isEnrollStatusLoginAllowed(st.enroll_status)) newStatus = 'disabled';
+  }
+
+  // الهوية القديمة تُعطَّل نهائياً، والجديدة ترث كل شيء (الحالة، الصف، PIN، تاريخ التسجيل)
   db.prepare("UPDATE IDs SET status = 'disabled' WHERE id = ?").run(oldId);
   db.prepare(
     `INSERT INTO IDs (id, kind, class_id, status, pin_hash, generated_at, registered_at, last_login, card_printed)
-     VALUES (?, ?, ?, ?, '', ?, ?, '', 'FALSE')`
-  ).run(newId, oldRec.kind, oldRec.class_id, oldRec.status === 'registered' ? 'registered' : 'unused', now, oldRec.status === 'registered' ? now : '');
+     VALUES (?, ?, ?, ?, ?, ?, ?, '', 'FALSE')`
+  ).run(
+    newId,
+    oldRec.kind,
+    oldRec.class_id,
+    newStatus,
+    fullOld?.pin_hash || '',
+    now,
+    hadProfile ? fullOld?.registered_at || now : ''
+  );
+
+  // إنهاء أي جلسة مفتوحة بالهوية القديمة
+  for (const [tok, sess] of sessions.entries()) {
+    if (sess.id === oldId) sessions.delete(tok);
+  }
 
   if (oldRec.kind === 'student') {
     db.prepare('UPDATE Students SET student_id = ?, updated_at = ? WHERE student_id = ?').run(newId, now, oldId);
+    db.prepare('UPDATE Complaints SET student_id = ? WHERE student_id = ?').run(newId, oldId);
+    db.prepare('UPDATE Archive_Grades SET student_id = ?, grade_key = ? || \'|\' || subject_id || \'|\' || year WHERE student_id = ?').run(newId, newId, oldId);
     const grades = db.prepare('SELECT grade_key, subject_id, year FROM Grades WHERE student_id = ?').all(oldId) as Array<{
       grade_key: string;
       subject_id: string;
@@ -1535,15 +1616,19 @@ function actionAdminStudentStatus(req: Record<string, unknown>, actorId: string)
   const studentId = normalizeIdDigits(String(req.student_id || ''));
   const enrollStatus = String(req.enroll_status || 'official');
   const statusNote = String(req.status_note || '');
-  if (!['official', 'transferred', 'expelled', 'graduated'].includes(enrollStatus)) {
+  if (!['official', 'affiliated', 'hosted', 'carried', 'transferred', 'expelled', 'graduated'].includes(enrollStatus)) {
     throw new ApiError('INVALID_STATUS');
   }
+  const exists = db.prepare('SELECT 1 AS x FROM Students WHERE student_id = ?').get(studentId);
+  if (!exists) throw new ApiError('NOT_FOUND');
   db.prepare('UPDATE Students SET enroll_status = ?, status_note = ?, updated_at = ? WHERE student_id = ?').run(
     enrollStatus,
     statusNote,
     nowIso(),
     studentId
   );
+  // تتبّع الهوية للحالة: تعطيل عند فصل/نقل/تخرج، وتفعيل عند رسمي/منتسب/استضافة/محمّل
+  syncStudentIdWithEnrollStatus(studentId);
   audit('admin', actorId, 'admin.studentStatus', `${studentId}:${enrollStatus}`, 'ok', statusNote);
   return true;
 }
@@ -1798,7 +1883,7 @@ function actionGradesSheet(req: Record<string, unknown>, ctx: { role: Role; id: 
   }
 
   const students = db
-    .prepare("SELECT student_id, full_name, enroll_status FROM Students WHERE class_id = ? AND enroll_status = 'official' ORDER BY full_name ASC")
+    .prepare(`SELECT student_id, full_name, enroll_status FROM Students WHERE class_id = ? AND enroll_status IN (${ALLOWED_STATUS_SQL}) ORDER BY full_name ASC`)
     .all(classId) as Array<{ student_id: string; full_name: string; enroll_status: string }>;
 
   const grades = db
@@ -1997,7 +2082,7 @@ function actionYearArchive(req: Record<string, unknown>, actorId: string) {
     stage_id: string;
     section: string;
   }>;
-  const students = db.prepare("SELECT * FROM Students WHERE enroll_status = 'official'").all() as unknown as StudentRow[];
+  const students = db.prepare(`SELECT * FROM Students WHERE enroll_status IN (${ALLOWED_STATUS_SQL})`).all() as unknown as StudentRow[];
   const grades = db.prepare('SELECT * FROM Grades WHERE year = ?').all(cfg.academic_year) as unknown as GradeRow[];
 
   const now = nowIso();
@@ -2062,6 +2147,7 @@ function actionYearArchive(req: Record<string, unknown>, actorId: string) {
         now,
         st.student_id
       );
+      syncStudentIdWithEnrollStatus(st.student_id);
       graduated++;
     } else {
       const targetClass =
@@ -2781,6 +2867,9 @@ function actionEducationDashboard(): EducationDashboardData {
   const male = students.filter((s) => s.gender === 'ذكر').length;
   const female = students.filter((s) => s.gender === 'أنثى').length;
   const official = students.filter((s) => s.enroll_status === 'official').length;
+  const affiliated = students.filter((s) => s.enroll_status === 'affiliated').length;
+  const hosted = students.filter((s) => s.enroll_status === 'hosted').length;
+  const carried = students.filter((s) => s.enroll_status === 'carried').length;
   const transferred = students.filter((s) => s.enroll_status === 'transferred').length;
   const expelled = students.filter((s) => s.enroll_status === 'expelled').length;
   const graduated = students.filter((s) => s.enroll_status === 'graduated').length;
@@ -2956,6 +3045,9 @@ function actionEducationDashboard(): EducationDashboardData {
     students: {
       total: students.length,
       official,
+      affiliated,
+      hosted,
+      carried,
       transferred,
       expelled,
       graduated,
@@ -3015,4 +3107,11 @@ function actionEducationDashboard(): EducationDashboardData {
       items: complaints,
     },
   };
+}
+
+
+try {
+  syncAllStudentIds();
+} catch (e) {
+  console.error('syncAllStudentIds failed', e);
 }
