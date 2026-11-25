@@ -9,7 +9,13 @@ export type EnrollStatus = 'official' | 'transferred' | 'expelled' | 'graduated'
 export type IdStatus = 'unused' | 'registered' | 'disabled';
 export type IdKind = 'student' | 'teacher';
 export type ComplaintStatus = 'open' | 'in_review' | 'resolved';
-export type AttendanceStatus = 'on_time' | 'late';
+export type AttendanceStatus = 'on_time' | 'late' | 'absent' | 'excused_leave';
+
+export interface AttendanceLockInfo {
+  locked: boolean;
+  reason: string;
+  updated_at: string;
+}
 
 export interface SchoolConfig {
   school_name: string;
@@ -225,10 +231,14 @@ export interface TeacherAttendanceMineResponse {
   todayDate: string;
   todayRecord: AttendanceRow | null;
   schedule: AttendanceSchedule;
+  locked: boolean;
+  lockReason: string;
   summary: {
     totalDays: number;
     onTimeDays: number;
     lateDays: number;
+    absentDays: number;
+    leaveDays: number;
     totalLateMinutes: number;
   };
   records: AttendanceRow[];
@@ -309,9 +319,13 @@ export interface EducationDashboardData {
     todayOnTime: number;
     todayLate: number;
     todayAbsent: number;
+    todayLeave: number;
     totalRecords: number;
     onTimeRecords: number;
     lateRecords: number;
+    absentRecords: number;
+    leaveRecords: number;
+    lockedTeachers: number;
     totalLateMinutes: number;
     dailyTrend: Array<{ date: string; on_time: number; late: number; total: number }>;
     byTeacher: Array<{
@@ -321,8 +335,12 @@ export interface EducationDashboardData {
       total_days: number;
       on_time_days: number;
       late_days: number;
+      absent_days: number;
+      leave_days: number;
       total_late_minutes: number;
-      today_status: 'on_time' | 'late' | 'absent';
+      locked: boolean;
+      lock_reason: string;
+      today_status: 'on_time' | 'late' | 'absent' | 'excused_leave';
       today_check_in: string;
       today_check_out: string;
     }>;
