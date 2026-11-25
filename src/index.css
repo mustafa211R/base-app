@@ -5,10 +5,21 @@
     font-family: 'Cairo', 'Tajawal', system-ui, -apple-system, sans-serif;
   }
 
+  /* IBM Plex Mono لا يحتوي حروفاً عربية، لذا يجب أن يكون Cairo هو البديل المباشر
+     وإلا يختار المتصفح خط عربي عشوائي (شكل الخط الغريب في الواجهة) */
   .font-mono,
   .tabular-nums {
-    font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: 'IBM Plex Mono', 'Cairo', 'Tajawal', system-ui, sans-serif;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* الأوقات والتواريخ: أرقام لاتينية واضحة ومحاذاة يسار-يمين ثابتة داخل النص العربي */
+  [dir='ltr'].font-mono {
+    unicode-bidi: isolate;
+  }
+
+  input, select, textarea, button {
+    font-family: inherit;
   }
 }
 
