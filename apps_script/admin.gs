@@ -70,6 +70,7 @@ function initSchema_() {
     ['attendance_end_time', '13:30'],
     ['attendance_grace_minutes', '15'],
     ['attendance_workdays', '0,1,2,3,4'],
+    ['attendance_locks', '{}'],
     ['schema_version', '2']
   ];
   const existingCfg = readAll_('Config');
@@ -255,6 +256,7 @@ function adminSchoolSave_(req, ctx) {
     appendObj_('Config', { key: 'logo_file_id', value: logoId }, true);
   }
 
+  SpreadsheetApp.flush();
   clearCache_(['cfg']);
   if (readAll_('Stages').length === 0) stageApplyDefaults_({ school_type: req.school_type || cfg.school_type }, ctx);
   audit_('admin', ctx.id, 'admin.schoolSave', String(req.school_name || cfg.school_name), 'ok');
