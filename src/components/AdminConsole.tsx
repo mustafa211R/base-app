@@ -124,12 +124,12 @@ export function AdminConsole({ publicData, onRefreshPublic, onLogout }: AdminCon
       : null;
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <div className="min-h-screen bg-slate-50 flex flex-col overflow-x-hidden">
       {/* Top Bar */}
       <header className="no-print bg-[#0F294A] text-white border-b border-slate-800 sticky top-0 z-30">
-        <div className="px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
-          <div className="flex items-center gap-3 min-w-0">
-            <span className="font-bold text-base sm:text-lg whitespace-nowrap shrink-0">
+        <div className="px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-6">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <span className="font-bold text-sm sm:text-lg truncate">
               base — إدارة المدرسة
             </span>
             <span className="hidden sm:inline text-slate-400">/</span>
@@ -139,10 +139,11 @@ export function AdminConsole({ publicData, onRefreshPublic, onLogout }: AdminCon
           <button
             type="button"
             onClick={onLogout}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-medium text-white whitespace-nowrap shrink-0 cursor-pointer"
+            className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-medium text-white whitespace-nowrap shrink-0 cursor-pointer"
           >
             <LogOut className="w-4 h-4" />
-            <span>تسجيل الخروج</span>
+            <span className="hidden xs:inline sm:inline">تسجيل الخروج</span>
+            <span className="xs:hidden sm:hidden">خروج</span>
           </button>
         </div>
       </header>
@@ -181,29 +182,40 @@ export function AdminConsole({ publicData, onRefreshPublic, onLogout }: AdminCon
         </aside>
 
         {/* Mobile/Tablet Screen Switcher */}
-        <div className="no-print lg:hidden bg-white border-b border-slate-200 overflow-x-auto px-3 py-2 flex items-center gap-1.5">
-          {SIDEBAR_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => {
-                setSuccessMsg('');
-                setErrorMsg('');
-                setScreen(item.id);
-              }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer ${
-                screen === item.id
-                  ? 'bg-[#0F294A] text-white'
-                  : 'bg-slate-100 text-slate-700'
-              }`}
-            >
-              {item.short}
-            </button>
-          ))}
+        <div className="no-print lg:hidden bg-white border-b border-slate-200 px-3 py-2.5 space-y-2">
+          <div className="flex items-center justify-between text-xs text-slate-500">
+            <span className="font-semibold text-[#0F294A] truncate">{activeItem.label}</span>
+            <span className="text-[11px] shrink-0">القسم {screen} من 10</span>
+          </div>
+          <div className="grid grid-cols-5 gap-1.5">
+            {SIDEBAR_ITEMS.map((item) => {
+              const Icon = item.icon;
+              const active = screen === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setSuccessMsg('');
+                    setErrorMsg('');
+                    setScreen(item.id);
+                  }}
+                  className={`flex flex-col items-center justify-center gap-1 px-1 py-1.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-[#0F294A] text-white'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate max-w-full">{item.short}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* Main Workspace */}
-        <main className="flex-1 p-4 sm:p-6 max-w-6xl w-full mx-auto space-y-5">
+        <main className="flex-1 min-w-0 p-3 sm:p-6 max-w-6xl w-full mx-auto space-y-4 sm:space-y-5">
           {/* KPI Summary Strip */}
           {dashboard && (
             <div className="no-print grid grid-cols-2 sm:grid-cols-4 gap-3">
