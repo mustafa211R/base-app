@@ -265,6 +265,7 @@ export function initSchema(): void {
     ['attendance_end_time', '13:30'],
     ['attendance_grace_minutes', '15'],
     ['attendance_workdays', '0,1,2,3,4'],
+    ['attendance_locks', '{}'],
     ['schema_version', '2'],
   ];
 
