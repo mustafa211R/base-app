@@ -4,6 +4,7 @@ import path from 'node:path';
 import * as XLSX from 'xlsx';
 import { db, initSchema, PHOTOS_DIR } from './db.ts';
 import { luhnCheckDigit, luhnValid, normalizeIdDigits } from '../shared/luhn.ts';
+import { parseHHMM } from '../shared/timeFormat.ts';
 import type {
   Role,
   SchoolConfig,
@@ -55,7 +56,7 @@ function nowIso(): string {
 }
 
 function todayDate(): string {
-  return new Date().toISOString().slice(0, 10);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Baghdad', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
 
 function baghdadNow(): { date: string; time: string; minutes: number } {
@@ -100,8 +101,8 @@ function safeEqualText(a: string, b: string): boolean {
 
 function getScheduleFromConfig(cfg: SchoolConfig): AttendanceSchedule {
   return {
-    attendance_start_time: cfg.attendance_start_time || '08:00',
-    attendance_end_time: cfg.attendance_end_time || '13:30',
+    attendance_start_time: parseHHMM(cfg.attendance_start_time) ?? '08:00',
+    attendance_end_time: parseHHMM(cfg.attendance_end_time) ?? '13:30',
     attendance_grace_minutes: Math.max(0, Math.min(180, Number(cfg.attendance_grace_minutes || 15))),
     attendance_workdays: cfg.attendance_workdays || '0,1,2,3,4',
   };
@@ -870,11 +871,11 @@ function actionAdminSchoolSave(req: Record<string, unknown>, actorId: string) {
   if (!validateMapUrl(mapUrl)) throw new ApiError('INVALID_MAP_URL');
 
   const attStart = req.attendance_start_time !== undefined
-    ? String(req.attendance_start_time).trim()
-    : (cfg.attendance_start_time || '08:00');
+    ? (parseHHMM(req.attendance_start_time) ?? '')
+    : (parseHHMM(cfg.attendance_start_time) ?? '08:00');
   const attEnd = req.attendance_end_time !== undefined
-    ? String(req.attendance_end_time).trim()
-    : (cfg.attendance_end_time || '13:30');
+    ? (parseHHMM(req.attendance_end_time) ?? '')
+    : (parseHHMM(cfg.attendance_end_time) ?? '13:30');
   parseTimeMinutes(attStart);
   parseTimeMinutes(attEnd);
 
