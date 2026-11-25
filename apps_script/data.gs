@@ -36,12 +36,19 @@ function asDateStr_(v) {
   return String(v).trim();
 }
 
+function normalizeDigits_(v) {
+  return String(v === undefined || v === null ? '' : v)
+    .replace(/[\u200e\u200f\u202a-\u202e\u061c]/g, '')
+    .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+    .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)));
+}
+
 function asTimeStr_(v) {
   if (!v) return '';
   if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
     return Utilities.formatDate(v, sheetTz_(), 'HH:mm:ss');
   }
-  return String(v).trim();
+  return normalizeDigits_(v).trim();
 }
 
 function asHHMMStr_(v) {
@@ -49,12 +56,21 @@ function asHHMMStr_(v) {
   if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
     return Utilities.formatDate(v, sheetTz_(), 'HH:mm');
   }
-  const s = String(v).trim();
+  const s = normalizeDigits_(v).trim();
   const ampm = /^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM|ص|م)$/i.exec(s);
   if (ampm) {
     let h = Number(ampm[1]);
     const m = ampm[2];
     const suf = ampm[3].toUpperCase();
+    if ((suf === 'PM' || suf === 'م') && h < 12) h += 12;
+    if ((suf === 'AM' || suf === 'ص') && h === 12) h = 0;
+    return ('0' + h).slice(-2) + ':' + m;
+  }
+  const ampmPrefix = /^(AM|PM|ص|م)\s*(\d{1,2}):(\d{2})(?::\d{2})?$/i.exec(s);
+  if (ampmPrefix) {
+    let h = Number(ampmPrefix[2]);
+    const m = ampmPrefix[3];
+    const suf = ampmPrefix[1].toUpperCase();
     if ((suf === 'PM' || suf === 'م') && h < 12) h += 12;
     if ((suf === 'AM' || suf === 'ص') && h === 12) h = 0;
     return ('0' + h).slice(-2) + ':' + m;
@@ -82,8 +98,8 @@ function getScheduleFromConfig_(cfg) {
   return {
     attendance_start_time: /^\d{2}:\d{2}$/.test(startRaw) ? startRaw : '08:00',
     attendance_end_time: /^\d{2}:\d{2}$/.test(endRaw) ? endRaw : '13:30',
-    attendance_grace_minutes: Math.max(0, Math.min(180, Number(cfg.attendance_grace_minutes || 15))),
-    attendance_workdays: cfg.attendance_workdays || '0,1,2,3,4'
+    attendance_grace_minutes: Math.max(0, Math.min(180, Number(normalizeDigits_(cfg.attendance_grace_minutes || 15)) || 15)),
+    attendance_workdays: normalizeDigits_(cfg.attendance_workdays || '0,1,2,3,4')
   };
 }
 
@@ -145,13 +161,14 @@ function clearCache_(keys) {
     if (k === 'cfg') {
       expanded.push('cfg_v2');
       expanded.push('cfg_v3');
+      expanded.push('cfg_v4');
     }
   });
   CacheService.getScriptCache().removeAll(expanded);
 }
 
 function config_() {
-  return cached_('cfg_v3', 120, () => {
+  return cached_('cfg_v4', 120, () => {
     const o = {};
     const sh = sheet_('Config');
     if (!sh || sh.getLastRow() < 2) return o;
@@ -168,15 +185,18 @@ function config_() {
       const raw = vals[i][vIdx];
       const shown = String(disp[i][vIdx] || '').trim();
       if (k === 'attendance_start_time' || k === 'attendance_end_time') {
+        const strFirst = typeof raw === 'string' ? asHHMMStr_(raw) : '';
         const dTime = asHHMMStr_(shown);
         const rTime = asHHMMStr_(raw);
-        o[k] = /^\d{2}:\d{2}$/.test(dTime)
-          ? dTime
-          : (/^\d{2}:\d{2}$/.test(rTime) ? rTime : (k === 'attendance_start_time' ? '08:00' : '13:30'));
+        o[k] = /^\d{2}:\d{2}$/.test(strFirst)
+          ? strFirst
+          : (/^\d{2}:\d{2}$/.test(dTime)
+            ? dTime
+            : (/^\d{2}:\d{2}$/.test(rTime) ? rTime : (k === 'attendance_start_time' ? '08:00' : '13:30')));
       } else if (Object.prototype.toString.call(raw) === '[object Date]' && !isNaN(raw.getTime())) {
         o[k] = asDateStr_(raw);
       } else if (k === 'education_access_code' || k === 'attendance_workdays' || k === 'attendance_grace_minutes' || k === 'pass_mark') {
-        o[k] = shown !== '' ? shown : String(raw === undefined || raw === null ? '' : raw);
+        o[k] = normalizeDigits_(shown !== '' ? shown : String(raw === undefined || raw === null ? '' : raw));
       } else {
         o[k] = String(raw === undefined || raw === null ? '' : raw);
       }
@@ -486,6 +506,28 @@ function getPhoto_(req, ctx) {
   return readDrivePhotoDataUrl_(rec.photo_file_id);
 }
 
+function parseAttendanceLocksMap_(cfg) {
+  try {
+    const raw = cfg && cfg.attendance_locks ? JSON.parse(String(cfg.attendance_locks)) : {};
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  } catch (_) {}
+  return {};
+}
+
+function saveAttendanceLocksMap_(locks) {
+  const val = JSON.stringify(locks || {});
+  const row = findRow_('Config', 'key', 'attendance_locks');
+  if (row) {
+    const cell = sheet_('Config').getRange(row, 2);
+    cell.setNumberFormat('@');
+    cell.setValue(val);
+  } else {
+    appendObj_('Config', { key: 'attendance_locks', value: val }, true);
+  }
+  SpreadsheetApp.flush();
+  clearCache_(['cfg']);
+}
+
 function normalizeAttRow_(r) {
   return Object.assign({}, r, {
     teacher_id: String(r.teacher_id || ''),
@@ -501,11 +543,16 @@ function attendancePunch_(req, ctx) {
   const teacher = readAll_('Teachers').find(t => String(t.teacher_id) === String(ctx.id));
   if (!teacher) throw new Error('NOT_FOUND');
 
+  const cfg = config_();
+  const locks = parseAttendanceLocksMap_(cfg);
+  if (locks[String(teacher.teacher_id)] && locks[String(teacher.teacher_id)].locked) {
+    throw new Error('ATTENDANCE_LOCKED');
+  }
+
   const punchType = req.type === 'out' ? 'out' : 'in';
   const method = req.method === 'webauthn' ? 'webauthn' : 'fingerprint_digital';
   const deviceNote = String(req.device_note || '').slice(0, 140);
 
-  const cfg = config_();
   const schedule = getScheduleFromConfig_(cfg);
   const startMinutes = parseTimeMinutes_(schedule.attendance_start_time);
   const deadlineMinutes = startMinutes + schedule.attendance_grace_minutes;
@@ -517,9 +564,13 @@ function attendancePunch_(req, ctx) {
 
   const all = readAll_('Attendance');
   const idx = all.findIndex(r => String(r.teacher_id) === String(ctx.id) && asDateStr_(r.att_date) === today);
+  const existing = idx >= 0 ? normalizeAttRow_(all[idx]) : null;
+  if (existing && (existing.status === 'absent' || existing.status === 'excused_leave')) {
+    throw new Error('ATTENDANCE_DAY_CLOSED');
+  }
 
   if (punchType === 'in') {
-    if (idx >= 0) throw new Error('ALREADY_CHECKED_IN');
+    if (existing) throw new Error('ALREADY_CHECKED_IN');
     const isLate = nowMinutes > deadlineMinutes;
     const status = isLate ? 'late' : 'on_time';
     const lateMinutes = isLate ? Math.max(1, nowMinutes - startMinutes) : 0;
@@ -543,9 +594,8 @@ function attendancePunch_(req, ctx) {
     return obj;
   }
 
-  if (idx < 0) throw new Error('NOT_CHECKED_IN');
+  if (!existing) throw new Error('NOT_CHECKED_IN');
   const sheetRow = idx + 2;
-  const existing = normalizeAttRow_(all[idx]);
   if (existing.check_out_time) throw new Error('ALREADY_CHECKED_OUT');
 
   existing.check_out_time = nowTime;
@@ -559,6 +609,8 @@ function attendanceMine_(req, ctx) {
   if (!ctx.id) throw new Error('FORBIDDEN');
   const cfg = config_();
   const schedule = getScheduleFromConfig_(cfg);
+  const locks = parseAttendanceLocksMap_(cfg);
+  const lockInfo = locks[String(ctx.id)];
   const today = baghdadNow_().date;
 
   const records = readAll_('Attendance')
@@ -570,16 +622,22 @@ function attendanceMine_(req, ctx) {
   const todayRecord = records.find(r => r.att_date === today) || null;
   const onTimeDays = records.filter(r => r.status === 'on_time').length;
   const lateDays = records.filter(r => r.status === 'late').length;
+  const absentDays = records.filter(r => r.status === 'absent').length;
+  const leaveDays = records.filter(r => r.status === 'excused_leave').length;
   const totalLateMinutes = records.reduce((acc, r) => acc + Number(r.late_minutes || 0), 0);
 
   return {
     todayDate: today,
     todayRecord: todayRecord,
     schedule: schedule,
+    locked: Boolean(lockInfo && lockInfo.locked),
+    lockReason: (lockInfo && lockInfo.reason) || '',
     summary: {
       totalDays: records.length,
       onTimeDays: onTimeDays,
       lateDays: lateDays,
+      absentDays: absentDays,
+      leaveDays: leaveDays,
       totalLateMinutes: totalLateMinutes
     },
     records: records
@@ -589,7 +647,18 @@ function attendanceMine_(req, ctx) {
 function attendanceList_(req) {
   const cfg = config_();
   const schedule = getScheduleFromConfig_(cfg);
+  const locks = parseAttendanceLocksMap_(cfg);
   const today = baghdadNow_().date;
+  const teachers = readAll_('Teachers')
+    .map(t => ({
+      teacher_id: String(t.teacher_id),
+      full_name: t.full_name,
+      job_title: t.job_title,
+      specialty: t.specialty,
+      status: t.status
+    }))
+    .sort((a, b) => String(a.full_name).localeCompare(String(b.full_name)));
+
   let rows = readAll_('Attendance')
     .map(normalizeAttRow_)
     .sort((a, b) => (b.att_date + ' ' + b.check_in_time).localeCompare(a.att_date + ' ' + a.check_in_time))
@@ -602,7 +671,99 @@ function attendanceList_(req) {
   if (req.att_date) rows = rows.filter(r => r.att_date === String(req.att_date));
   if (req.status) rows = rows.filter(r => r.status === String(req.status));
 
-  return { todayDate: today, schedule: schedule, records: rows };
+  return { todayDate: today, schedule: schedule, locks: locks, teachers: teachers, records: rows };
+}
+
+function attendanceMarkAbsence_(req, ctx) {
+  const teacherId = normalizeDigits_(req.teacher_id || '').replace(/\D/g, '');
+  if (!teacherId) throw new Error('MISSING_FIELD');
+  const teacher = readAll_('Teachers').find(t => String(t.teacher_id) === teacherId);
+  if (!teacher) throw new Error('NOT_FOUND');
+
+  const status = req.status === 'excused_leave' ? 'excused_leave' : 'absent';
+  const today = baghdadNow_().date;
+  const dateStr = normalizeDigits_(req.att_date || '').trim();
+  const attDate = /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : today;
+  const note = String(req.note || '').trim().slice(0, 140);
+  const now = new Date().toISOString();
+
+  const all = readAll_('Attendance');
+  const idx = all.findIndex(r => String(r.teacher_id) === teacherId && asDateStr_(r.att_date) === attDate);
+  if (idx >= 0) {
+    const cur = normalizeAttRow_(all[idx]);
+    cur.check_in_time = '';
+    cur.check_out_time = '';
+    cur.method = 'admin_lock';
+    cur.status = status;
+    cur.late_minutes = 0;
+    cur.device_note = note;
+    cur.updated_at = now;
+    updateRowObj_('Attendance', idx + 2, cur, true);
+    audit_('admin', ctx.id, 'attendance.markAbsence', teacherId + ':' + attDate + ':' + status, 'ok');
+    return cur;
+  }
+
+  const attId = 'Att-' + attDate.replace(/-/g, '') + '-' + Utilities.getUuid().slice(0, 6).toUpperCase();
+  const obj = {
+    att_id: attId,
+    teacher_id: teacherId,
+    teacher_name: teacher.full_name,
+    att_date: attDate,
+    check_in_time: '',
+    check_out_time: '',
+    method: 'admin_lock',
+    status: status,
+    late_minutes: 0,
+    device_note: note,
+    created_at: now,
+    updated_at: now
+  };
+  appendObj_('Attendance', obj, true);
+  audit_('admin', ctx.id, 'attendance.markAbsence', teacherId + ':' + attDate + ':' + status, 'ok');
+  return obj;
+}
+
+function attendanceClearDay_(req, ctx) {
+  const attId = String(req.att_id || '').trim();
+  if (attId) {
+    const row = findRow_('Attendance', 'att_id', attId);
+    if (row) sheet_('Attendance').deleteRow(row);
+    audit_('admin', ctx.id, 'attendance.clearDay', attId, 'ok');
+    return true;
+  }
+  const teacherId = normalizeDigits_(req.teacher_id || '').replace(/\D/g, '');
+  const attDate = normalizeDigits_(req.att_date || '').trim();
+  if (!teacherId || !attDate) throw new Error('MISSING_FIELD');
+  const all = readAll_('Attendance');
+  for (let i = all.length - 1; i >= 0; i--) {
+    if (String(all[i].teacher_id) === teacherId && asDateStr_(all[i].att_date) === attDate) {
+      sheet_('Attendance').deleteRow(i + 2);
+    }
+  }
+  audit_('admin', ctx.id, 'attendance.clearDay', teacherId + ':' + attDate, 'ok');
+  return true;
+}
+
+function attendanceSetLock_(req, ctx) {
+  const teacherId = normalizeDigits_(req.teacher_id || '').replace(/\D/g, '');
+  if (!teacherId) throw new Error('MISSING_FIELD');
+  const teacher = readAll_('Teachers').find(t => String(t.teacher_id) === teacherId);
+  if (!teacher) throw new Error('NOT_FOUND');
+
+  const cfg = config_();
+  const locks = parseAttendanceLocksMap_(cfg);
+  const locked = Boolean(req.locked);
+  const reason = String(req.reason || '').trim().slice(0, 140);
+  const now = new Date().toISOString();
+
+  if (locked) {
+    locks[teacherId] = { locked: true, reason: reason, updated_at: now };
+  } else {
+    delete locks[teacherId];
+  }
+  saveAttendanceLocksMap_(locks);
+  audit_('admin', ctx.id, 'attendance.setLock', teacherId + ':' + (locked ? 'locked' : 'unlocked'), 'ok');
+  return locks;
 }
 
 function normalizeComplaintRow_(r) {
@@ -797,19 +958,26 @@ function educationDashboard_() {
     };
   });
 
+  const locks = parseAttendanceLocksMap_(cfg);
   const today = baghdadNow_().date;
   const todayRows = attendanceRows.filter(r => r.att_date === today);
   const todayOnTime = todayRows.filter(r => r.status === 'on_time').length;
   const todayLate = todayRows.filter(r => r.status === 'late').length;
-  const todayPresent = todayRows.length;
-  const todayAbsent = Math.max(0, teachers.length - todayPresent);
+  const todayLeave = todayRows.filter(r => r.status === 'excused_leave').length;
+  const todayMarkedAbsent = todayRows.filter(r => r.status === 'absent').length;
+  const todayPresent = todayOnTime + todayLate;
+  const todayAbsent = Math.max(todayMarkedAbsent, teachers.length - todayPresent - todayLeave);
 
   const onTimeRecords = attendanceRows.filter(r => r.status === 'on_time').length;
   const lateRecords = attendanceRows.filter(r => r.status === 'late').length;
+  const absentRecords = attendanceRows.filter(r => r.status === 'absent').length;
+  const leaveRecords = attendanceRows.filter(r => r.status === 'excused_leave').length;
+  const lockedTeachers = teachers.filter(t => Boolean(locks[String(t.teacher_id)] && locks[String(t.teacher_id)].locked)).length;
   const totalLateMinutes = attendanceRows.reduce((acc, r) => acc + Number(r.late_minutes || 0), 0);
 
   const dateMap = {};
   attendanceRows.forEach(r => {
+    if (r.status !== 'on_time' && r.status !== 'late') return;
     if (!dateMap[r.att_date]) dateMap[r.att_date] = { on_time: 0, late: 0 };
     if (r.status === 'late') dateMap[r.att_date].late++;
     else dateMap[r.att_date].on_time++;
@@ -823,6 +991,7 @@ function educationDashboard_() {
     const tid = String(t.teacher_id);
     const recs = attendanceRows.filter(r => r.teacher_id === tid);
     const todayRec = recs.find(r => r.att_date === today);
+    const lockInfo = locks[tid];
     return {
       teacher_id: tid,
       teacher_name: t.full_name,
@@ -830,7 +999,11 @@ function educationDashboard_() {
       total_days: recs.length,
       on_time_days: recs.filter(r => r.status === 'on_time').length,
       late_days: recs.filter(r => r.status === 'late').length,
+      absent_days: recs.filter(r => r.status === 'absent').length,
+      leave_days: recs.filter(r => r.status === 'excused_leave').length,
       total_late_minutes: recs.reduce((acc, r) => acc + Number(r.late_minutes || 0), 0),
+      locked: Boolean(lockInfo && lockInfo.locked),
+      lock_reason: (lockInfo && lockInfo.reason) || '',
       today_status: todayRec ? todayRec.status : 'absent',
       today_check_in: todayRec ? todayRec.check_in_time : '',
       today_check_out: todayRec ? todayRec.check_out_time : ''
@@ -900,9 +1073,13 @@ function educationDashboard_() {
       todayOnTime: todayOnTime,
       todayLate: todayLate,
       todayAbsent: todayAbsent,
+      todayLeave: todayLeave,
       totalRecords: attendanceRows.length,
       onTimeRecords: onTimeRecords,
       lateRecords: lateRecords,
+      absentRecords: absentRecords,
+      leaveRecords: leaveRecords,
+      lockedTeachers: lockedTeachers,
       totalLateMinutes: totalLateMinutes,
       dailyTrend: dailyTrend,
       byTeacher: byTeacher,
