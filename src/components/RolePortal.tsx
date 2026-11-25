@@ -232,22 +232,22 @@ export function RolePortal({
   const isClientLuhnOk = cleanDigits.length === expectedDigits && luhnValid(cleanDigits);
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col justify-between">
+    <div className="min-h-screen bg-slate-50 flex flex-col justify-between overflow-x-hidden">
       <header className="bg-[#0F294A] text-white border-b border-slate-800">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
-          <div className="flex items-center gap-3 min-w-0">
+        <div className="max-w-5xl mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-3 sm:gap-8">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
             {publicData.logo_file_id ? (
               <img
                 src={publicData.logo_file_id}
                 alt={publicData.school_name}
-                className="w-9 h-9 rounded-lg object-cover border border-amber-400/50 shrink-0"
+                className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg object-cover border border-amber-400/50 shrink-0"
               />
             ) : (
-              <div className="w-9 h-9 rounded-full border-2 border-[#C59B27] bg-[#0B1F3A] flex items-center justify-center text-[#C59B27] font-bold text-sm shrink-0">
+              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full border-2 border-[#C59B27] bg-[#0B1F3A] flex items-center justify-center text-[#C59B27] font-bold text-xs sm:text-sm shrink-0">
                 base
               </div>
             )}
-            <span className="font-bold text-base sm:text-lg truncate">
+            <span className="font-bold text-sm sm:text-lg truncate">
               {publicData.school_name || 'نظام base لإدارة المدرسة'}
             </span>
           </div>
@@ -255,7 +255,7 @@ export function RolePortal({
             <button
               type="button"
               onClick={() => switchView('select')}
-              className="flex items-center gap-2 text-sm text-slate-200 hover:text-white px-3 py-2 rounded-lg border border-white/15 whitespace-nowrap shrink-0 cursor-pointer"
+              className="flex items-center gap-1.5 text-xs sm:text-sm text-slate-200 hover:text-white px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg border border-white/15 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <ArrowRight className="w-4 h-4" />
               <span>تغيير الدور</span>
@@ -264,7 +264,7 @@ export function RolePortal({
         </div>
       </header>
 
-      <main className="flex-1 flex items-center justify-center px-4 py-10">
+      <main className="flex-1 flex items-center justify-center px-3 sm:px-4 py-6 sm:py-10">
         <div className="w-full max-w-4xl">
           {view === 'select' && (
             <div className="space-y-8">
@@ -281,11 +281,11 @@ export function RolePortal({
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
                 <button
                   type="button"
                   onClick={() => switchView('student')}
-                  className="bg-white border border-slate-200 hover:border-[#0F294A] rounded-xl p-5 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
+                  className="bg-white border border-slate-200 hover:border-[#0F294A] rounded-xl p-4 sm:p-5 text-right transition-colors flex sm:flex-col items-center sm:items-stretch justify-between gap-3 sm:gap-4 min-h-[88px] sm:min-h-[168px] cursor-pointer"
                 >
                   <div className="w-11 h-11 rounded-lg bg-[#0F294A]/10 text-[#0F294A] flex items-center justify-center">
                     <GraduationCap className="w-6 h-6" />
@@ -299,13 +299,13 @@ export function RolePortal({
                 <button
                   type="button"
                   onClick={() => switchView('teacher')}
-                  className="bg-white border border-slate-200 hover:border-emerald-700 rounded-xl p-5 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
+                  className="bg-white border border-slate-200 hover:border-emerald-700 rounded-xl p-4 sm:p-5 text-right transition-colors flex sm:flex-col items-center sm:items-stretch justify-between gap-3 sm:gap-4 min-h-[88px] sm:min-h-[168px] cursor-pointer"
                 >
-                  <div className="w-11 h-11 rounded-lg bg-emerald-700/10 text-emerald-800 flex items-center justify-center">
+                  <div className="w-11 h-11 rounded-lg bg-emerald-700/10 text-emerald-800 flex items-center justify-center shrink-0">
                     <BookOpen className="w-6 h-6" />
                   </div>
-                  <div>
-                    <div className="text-lg font-bold text-slate-900">مدرس</div>
+                  <div className="flex-1">
+                    <div className="text-base sm:text-lg font-bold text-slate-900">مدرس</div>
                     <p className="text-xs text-slate-500 mt-1">الدخول برقم الهوية التدريسية والبصمة</p>
                   </div>
                 </button>
@@ -313,13 +313,13 @@ export function RolePortal({
                 <button
                   type="button"
                   onClick={() => switchView('admin')}
-                  className="bg-white border border-slate-200 hover:border-[#B8860B] rounded-xl p-5 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
+                  className="bg-white border border-slate-200 hover:border-[#B8860B] rounded-xl p-4 sm:p-5 text-right transition-colors flex sm:flex-col items-center sm:items-stretch justify-between gap-3 sm:gap-4 min-h-[88px] sm:min-h-[168px] cursor-pointer"
                 >
-                  <div className="w-11 h-11 rounded-lg bg-amber-600/10 text-[#9A7008] flex items-center justify-center">
+                  <div className="w-11 h-11 rounded-lg bg-amber-600/10 text-[#9A7008] flex items-center justify-center shrink-0">
                     <ShieldCheck className="w-6 h-6" />
                   </div>
-                  <div>
-                    <div className="text-lg font-bold text-slate-900">مدير</div>
+                  <div className="flex-1">
+                    <div className="text-base sm:text-lg font-bold text-slate-900">مدير</div>
                     <p className="text-xs text-slate-500 mt-1">إدارة المدرسة والهويات والصلاحيات</p>
                   </div>
                 </button>
@@ -327,13 +327,13 @@ export function RolePortal({
                 <button
                   type="button"
                   onClick={() => switchView('education')}
-                  className="bg-white border border-slate-200 hover:border-sky-700 rounded-xl p-5 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
+                  className="bg-white border border-slate-200 hover:border-sky-700 rounded-xl p-4 sm:p-5 text-right transition-colors flex sm:flex-col items-center sm:items-stretch justify-between gap-3 sm:gap-4 min-h-[88px] sm:min-h-[168px] cursor-pointer"
                 >
-                  <div className="w-11 h-11 rounded-lg bg-sky-700/10 text-sky-800 flex items-center justify-center">
+                  <div className="w-11 h-11 rounded-lg bg-sky-700/10 text-sky-800 flex items-center justify-center shrink-0">
                     <Landmark className="w-6 h-6" />
                   </div>
-                  <div>
-                    <div className="text-lg font-bold text-slate-900">قسم التربية</div>
+                  <div className="flex-1">
+                    <div className="text-base sm:text-lg font-bold text-slate-900">قسم التربية</div>
                     <p className="text-xs text-slate-500 mt-1">بوابة مديرية التربية والإشراف (بكود المدرسة)</p>
                   </div>
                 </button>
@@ -341,13 +341,13 @@ export function RolePortal({
                 <button
                   type="button"
                   onClick={onEnterGuest}
-                  className="bg-white border border-slate-200 hover:border-slate-400 rounded-xl p-5 text-right transition-colors flex flex-col justify-between gap-4 min-h-[168px] cursor-pointer"
+                  className="bg-white border border-slate-200 hover:border-slate-400 rounded-xl p-4 sm:p-5 text-right transition-colors flex sm:flex-col items-center sm:items-stretch justify-between gap-3 sm:gap-4 min-h-[88px] sm:min-h-[168px] cursor-pointer"
                 >
-                  <div className="w-11 h-11 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center">
+                  <div className="w-11 h-11 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center shrink-0">
                     <Eye className="w-6 h-6" />
                   </div>
-                  <div>
-                    <div className="text-lg font-bold text-slate-900">ضيف — للمطالعة</div>
+                  <div className="flex-1">
+                    <div className="text-base sm:text-lg font-bold text-slate-900">ضيف — للمطالعة</div>
                     <p className="text-xs text-slate-500 mt-1">معلومات المدرسة والإعلانات العامة</p>
                   </div>
                 </button>
