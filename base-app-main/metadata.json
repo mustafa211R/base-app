@@ -1,6 +1,0 @@
-{
-  "name": "نظام base لإدارة المدرسة",
-  "description": "منصة base المتكاملة لإدارة المدرسة (الهويات، الطلاب، المدرسين، الدرجات، الصلاحيات، والنسخ الاحتياطي) وفق بنية Google Sheets و Apps Script.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
