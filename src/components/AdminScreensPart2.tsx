@@ -123,6 +123,7 @@ export function AdminScreensPart2({
   // Subjects & Assignments
   const [newSubName, setNewSubName] = useState('');
   const [newSubStage, setNewSubStage] = useState(stages[0]?.stage_id || '');
+  const [newSubPeriods, setNewSubPeriods] = useState('4');
   const [asgTeacher, setAsgTeacher] = useState('');
   const [asgSubject, setAsgSubject] = useState('');
   const [asgClass, setAsgClass] = useState('');
@@ -759,6 +760,7 @@ export function AdminScreensPart2({
                     await api('admin.subjectUpsert', {
                       name_ar: newSubName,
                       stage_id: newSubStage || stages[0]?.stage_id,
+                      weekly_periods: Number(newSubPeriods) || 4,
                     });
                     setNewSubName('');
                     await onRefreshAll();
@@ -787,15 +789,53 @@ export function AdminScreensPart2({
                   placeholder="اسم المادة..."
                   className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-xs"
                 />
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={newSubPeriods}
+                  onChange={(e) => setNewSubPeriods(e.target.value)}
+                  title="عدد الحصص الأسبوعية"
+                  placeholder="حصص"
+                  className="w-16 px-2 py-2 border border-slate-300 rounded-lg text-xs text-center font-mono"
+                />
                 <button type="submit" className="px-3 py-2 bg-[#0F294A] text-white text-xs rounded-lg cursor-pointer">
                   إضافة
                 </button>
               </form>
               <div className="max-h-64 overflow-y-auto divide-y divide-slate-200 text-xs">
                 {subjects.map((sub) => (
-                  <div key={sub.subject_id} className="py-2 flex justify-between">
-                    <span className="font-medium text-slate-900">{sub.name_ar}</span>
+                  <div key={sub.subject_id} className="py-2 flex items-center justify-between gap-2">
+                    <span className="font-medium text-slate-900 flex-1 min-w-0 truncate">{sub.name_ar}</span>
                     <span className="text-slate-500">{sub.stage_name}</span>
+                    <label className="flex items-center gap-1 text-slate-500">
+                      <span>حصص/أسبوع</span>
+                      <input
+                        key={`${sub.subject_id}-${sub.weekly_periods}`}
+                        type="number"
+                        min={1}
+                        max={20}
+                        defaultValue={sub.weekly_periods}
+                        onBlur={async (e) => {
+                          const v = Number(e.target.value);
+                          if (!v || v === Number(sub.weekly_periods)) return;
+                          try {
+                            await api('admin.subjectUpsert', {
+                              subject_id: sub.subject_id,
+                              name_ar: sub.name_ar,
+                              stage_id: sub.stage_id,
+                              weekly_periods: v,
+                              active: sub.active,
+                            });
+                            await onRefreshAll();
+                            onSuccess('تم تحديث عدد الحصص الأسبوعية');
+                          } catch (err) {
+                            onError(err);
+                          }
+                        }}
+                        className="w-14 px-1.5 py-1 border border-slate-300 rounded text-center font-mono text-slate-900"
+                      />
+                    </label>
                   </div>
                 ))}
               </div>
